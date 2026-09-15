@@ -15,6 +15,20 @@ pub struct GpuSample {
     pub power_w: Option<f64>,
     pub sclk_mhz: Option<u64>,
     pub mclk_mhz: Option<u64>,
+    /// video decode engine utilization (%)
+    pub dec_pct: Option<f64>,
+    /// video encode engine utilization (%)
+    pub enc_pct: Option<f64>,
+    /// smi perf level, e.g. "auto"/"manual"/"low"
+    pub perf_level: Option<String>,
+    /// smi mode, e.g. "Normal"/"Power Saving" (non-Normal hints at throttling)
+    pub mode: Option<String>,
+    /// fan speed as percentage or rpm, when reported
+    pub fan_pct: Option<f64>,
+    pub fan_rpm: Option<u64>,
+    /// PCIe link throughput in MB/s, when reported
+    pub pcie_tx_mbps: Option<f64>,
+    pub pcie_rx_mbps: Option<f64>,
     #[serde(skip)]
     pub vram_pct: Option<f64>,
     #[serde(skip)]

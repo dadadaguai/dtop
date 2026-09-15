@@ -12,6 +12,10 @@ pub struct ProcInfo {
     #[allow(dead_code)]
     pub rss_kb: u64,
     pub cmd: String,
+    /// short container id (docker/containerd/crio), empty when not containerized
+    pub container: String,
+    /// short kubernetes pod uid, empty when not in a pod
+    pub pod: String,
     pub gpu_ids: Vec<usize>,
     pub gpu_vram_mb: f64,
 }
@@ -109,6 +113,8 @@ impl ProcCollector {
             mem_pct: 0.0,
             rss_kb: 0,
             cmd: String::new(),
+            container: String::new(),
+            pod: String::new(),
             gpu_ids: Vec::new(),
             gpu_vram_mb: 0.0,
         })
@@ -138,6 +144,90 @@ impl ProcCollector {
             })
             .unwrap_or_else(|| "?".into())
     }
+
+    /// Resolve the container id and kubernetes pod uid from the cgroup path.
+    /// Returns (pod_short, container_short); both empty for non-containerized
+    /// processes. Only called for visible rows.
+    pub fn read_container(pid: u32) -> (String, String) {
+        match fs::read_to_string(format!("/proc/{pid}/cgroup")) {
+            Ok(s) => parse_cgroup(&s),
+            Err(_) => (String::new(), String::new()),
+        }
+    }
+}
+
+/// Parse a /proc/<pid>/cgroup file for pod uid and container id.
+fn parse_cgroup(cg: &str) -> (String, String) {
+    let mut pod = String::new();
+    let mut cid = String::new();
+    for tok in cg.split(['/', ':']) {
+        let t = tok.trim();
+        if t.is_empty() {
+            continue;
+        }
+        // kubernetes pod uid appears as "...pod<uid>.slice". Note that
+        // "kubepods" itself contains "pod", so scan for the first occurrence
+        // actually followed by a uid-length hex/dash run.
+        if pod.is_empty() {
+            if let Some(uid) = extract_pod_uid(t) {
+                pod = uid;
+            }
+        }
+        // container id: runtime-prefixed, or a bare long hex run
+        for pfx in ["docker-", "cri-containerd-", "containerd-", "crio-"] {
+            if let Some(rest) = t.strip_prefix(pfx) {
+                let id: String = rest.chars().take_while(|c| c.is_ascii_hexdigit()).collect();
+                if id.len() >= 12 && cid.is_empty() {
+                    cid = id[..12].to_string();
+                }
+            }
+        }
+        if cid.is_empty() {
+            let run = longest_hex_run(t);
+            if run.len() >= 32 {
+                cid = run[..12].to_string();
+            }
+        }
+    }
+    (pod, cid)
+}
+
+/// Extract a pod uid short form from a token like
+/// "kubepods-burstable-pod1a2b3c4d-1111-2222-3333-444455556666.slice".
+/// "kubepods" itself contains "pod", so only accept an occurrence whose
+/// following hex/dash run is long enough to be a uid.
+fn extract_pod_uid(t: &str) -> Option<String> {
+    let mut start = 0;
+    while let Some(pos) = t[start..].find("pod") {
+        let p = start + pos + 3;
+        let uid: String = t[p..]
+            .chars()
+            .take_while(|c| c.is_ascii_hexdigit() || *c == '-')
+            .collect();
+        if uid.len() >= 32 {
+            return Some(uid[..8].to_string());
+        }
+        start = p;
+    }
+    None
+}
+
+fn longest_hex_run(s: &str) -> String {
+    let mut best = String::new();
+    let mut cur = String::new();
+    for c in s.chars() {
+        if c.is_ascii_hexdigit() {
+            cur.push(c);
+        } else if cur.len() > best.len() {
+            best = std::mem::take(&mut cur);
+        } else {
+            cur.clear();
+        }
+    }
+    if cur.len() > best.len() {
+        best = cur;
+    }
+    best
 }
 
 fn load_users() -> HashMap<u32, String> {
@@ -153,4 +243,40 @@ fn load_users() -> HashMap<u32, String> {
         }
     }
     m
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_cgroup_k8s_containerd() {
+        let cg = "0::/kubepods.slice/kubepods-burstable.slice/kubepods-burstable-pod1a2b3c4d-1111-2222-3333-444455556666.slice/cri-containerd-abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789.scope\n";
+        let (pod, cid) = parse_cgroup(cg);
+        assert_eq!(pod, "1a2b3c4d");
+        assert_eq!(cid, "abcdef012345");
+    }
+
+    #[test]
+    fn test_parse_cgroup_docker() {
+        let cg = "12:pids:/docker/9f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c5b4a39281706f5e4d3c2b1a0\n";
+        let (pod, cid) = parse_cgroup(cg);
+        assert!(pod.is_empty());
+        assert_eq!(cid, "9f8e7d6c5b4a");
+    }
+
+    #[test]
+    fn test_parse_cgroup_systemd_docker_scope() {
+        let cg = "0::/system.slice/docker-1122334455667788990011223344556677889900112233445566778899001122.scope";
+        let (_, cid) = parse_cgroup(cg);
+        assert_eq!(cid, "112233445566");
+    }
+
+    #[test]
+    fn test_parse_cgroup_bare_systemd() {
+        let cg = "0::/system.slice/sshd.service\n1:name=systemd:/user.slice/user-1000.slice/session-1.scope\n";
+        let (pod, cid) = parse_cgroup(cg);
+        assert!(pod.is_empty());
+        assert!(cid.is_empty());
+    }
 }

@@ -82,6 +82,35 @@ pub fn run(cli: &Cli, backend: &dyn GpuBackend) -> Result<()> {
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| "N/A".into()),
         );
+        // extra line only when the smi backend reports these
+        let mut extras: Vec<String> = Vec::new();
+        if let Some(d) = g.dec_pct {
+            extras.push(format!("dec {d:.0}%"));
+        }
+        if let Some(e) = g.enc_pct {
+            extras.push(format!("enc {e:.0}%"));
+        }
+        if let Some(f) = g.fan_pct {
+            extras.push(format!("fan {f:.0}%"));
+        } else if let Some(r) = g.fan_rpm {
+            extras.push(format!("fan {r}rpm"));
+        }
+        if let Some(p) = &g.perf_level {
+            extras.push(format!("perf {p}"));
+        }
+        if let Some(m) = &g.mode {
+            extras.push(format!("mode {m}"));
+        }
+        if let Some(tx) = g.pcie_tx_mbps {
+            let rx = g
+                .pcie_rx_mbps
+                .map(|r| format!("{r:.0}"))
+                .unwrap_or_else(|| "-".into());
+            extras.push(format!("pcie tx {tx:.0}/rx {rx} MB/s"));
+        }
+        if !extras.is_empty() {
+            println!("     {}", extras.join("  "));
+        }
     }
 
     if cli.procs > 0 {

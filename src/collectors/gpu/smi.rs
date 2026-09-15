@@ -14,6 +14,8 @@ pub struct SmiBackend {
 struct PidCache {
     procs: Vec<GpuProc>,
     bus_map: HashMap<String, usize>,
+    /// slowly-changing extras (Dec%/Enc%/Perf/Mode/Fan) from the default table
+    extras: Vec<GpuSample>,
     counter: u64,
 }
 
@@ -40,6 +42,7 @@ impl SmiBackend {
             cache: Mutex::new(PidCache {
                 procs: Vec::new(),
                 bus_map: HashMap::new(),
+                extras: Vec::new(),
                 counter: 0,
             }),
         }
@@ -110,11 +113,25 @@ impl GpuBackend for SmiBackend {
                     HashMap::new()
                 }
             };
+            // bare `hy-smi` concise table carries Dec%/Enc%/Perf/Mode which the
+            // --show* flags above do not expose
+            cache.extras = match self.run(&[], false) {
+                Ok(out) => parse_default_table(&out),
+                Err(e) => {
+                    log::debug!("{} default table failed: {e}", self.cmd);
+                    Vec::new()
+                }
+            };
         }
         // resolve card index via PCI bus when available (HCU Index in showpids
         // lists all visible cards, not the ones actually used).
-        // Destructure so procs (mut) and bus_map (shared) are disjoint borrows.
-        let PidCache { procs, bus_map, .. } = &mut *cache;
+        // Destructure so procs (mut), bus_map and extras (shared) are disjoint.
+        let PidCache {
+            procs,
+            bus_map,
+            extras,
+            ..
+        } = &mut *cache;
         for p in procs.iter_mut() {
             if !p.pci_bus.is_empty() {
                 if let Some(idx) = bus_map.get(&p.pci_bus) {
@@ -123,6 +140,7 @@ impl GpuBackend for SmiBackend {
             }
         }
         snap.procs = procs.clone();
+        merge_extras(&mut snap.gpus, extras);
         Ok(snap)
     }
 }
@@ -332,6 +350,48 @@ fn apply_kv(g: &mut GpuSample, key: &str, val: &str) {
     } else if !na && k.contains("mclk") {
         if let Some(mhz) = parse_clock_mhz(v) {
             g.mclk_mhz = Some(mhz);
+        }
+    } else if !na && (k == "dec%" || k.contains("decoder") || k.contains("decode")) {
+        if let Some(f) = first_f64(v) {
+            g.dec_pct = Some(f);
+        }
+    } else if !na && (k == "enc%" || k.contains("encoder") || k.contains("encode")) {
+        if let Some(f) = first_f64(v) {
+            g.enc_pct = Some(f);
+        }
+    } else if !na && k.contains("perf") {
+        g.perf_level = Some(v.to_string());
+    } else if !na && k.contains("mode") && !k.contains("model") {
+        g.mode = Some(v.to_string());
+    } else if !na && k.contains("fan") {
+        // "45%" -> percent, "1500 RPM" -> rpm
+        let vl = v.to_lowercase();
+        if vl.contains("rpm") {
+            if let Some(f) = first_f64(v) {
+                g.fan_rpm = Some(f as u64);
+            }
+        } else if let Some(f) = first_f64(v) {
+            g.fan_pct = Some(f);
+        }
+    } else if !na
+        && k.contains("pcie")
+        && !k.contains("clock")
+        && (k.contains("mb/s") || k.contains("mbps") || k.contains("bandwidth") || k.contains("throughput"))
+    {
+        // PCIe link throughput, e.g. "PCIe Tx (MB/s)" / "PCIe Bandwidth"
+        if k.contains("tx") || k.contains("txn") || k.contains("transmit") {
+            if let Some(f) = first_f64(v) {
+                g.pcie_tx_mbps = Some(f);
+            }
+        } else if k.contains("rx") || k.contains("receive") {
+            if let Some(f) = first_f64(v) {
+                g.pcie_rx_mbps = Some(f);
+            }
+        } else if let Some(f) = first_f64(v) {
+            // single bandwidth value: record on the tx side
+            if g.pcie_tx_mbps.is_none() {
+                g.pcie_tx_mbps = Some(f);
+            }
         }
     } else if !na && (k.contains("card model") || k.contains("model")) {
         g.name_model = v.to_string();
@@ -640,6 +700,111 @@ fn parse_bus_map(out: &str) -> HashMap<String, usize> {
     m
 }
 
+/// Parse the concise table produced by bare `hy-smi`:
+///
+/// HCU   Temp   AvgPwr   Perf   PwrCap   VRAM%   HCU%   Dec%   Enc%   Mode
+/// 0     52.0C  89.0W    manual 1000.0W  2%      0.0%   0.0%   0.0%   Normal
+///
+/// Carries Dec%/Enc%/Perf/Mode, which the --show* flags dtop normally calls
+/// do not expose.
+fn parse_default_table(out: &str) -> Vec<GpuSample> {
+    let mut header: Option<Vec<String>> = None;
+    let mut gpus: Vec<GpuSample> = Vec::new();
+
+    for line in out.lines() {
+        let t = line.trim();
+        if t.is_empty() || t.chars().all(|c| c == '=' || c == '-') {
+            continue;
+        }
+        let cols: Vec<&str> = t.split_whitespace().collect();
+        let lower = t.to_lowercase();
+
+        if header.is_none() {
+            if (lower.contains("hcu") || lower.contains("gpu") || lower.contains("dcu"))
+                && lower.contains("temp")
+                && cols.len() >= 4
+            {
+                header = Some(cols.iter().map(|c| c.to_lowercase()).collect());
+            }
+            continue;
+        }
+        let h = header.as_ref().unwrap();
+        if cols.len() < h.len() {
+            continue;
+        }
+        let idx: usize = match cols[0].parse() {
+            Ok(i) => i,
+            Err(_) => continue,
+        };
+        let mut g = GpuSample {
+            index: idx,
+            ..Default::default()
+        };
+        for (i, key) in h.iter().enumerate() {
+            if i == 0 || i > cols.len() {
+                continue; // column 0 is the card index
+            }
+            // the last column can contain spaces (e.g. Mode = "Power Saving")
+            let val_owned;
+            let val: &str = if i == h.len() - 1 {
+                val_owned = cols[i..].join(" ");
+                &val_owned
+            } else {
+                cols[i]
+            };
+            match key.as_str() {
+                "hcu%" | "gpu%" | "dcu%" | "util%" => g.util = first_f64(val),
+                "vram%" | "mem%" => g.vram_pct = first_f64(val),
+                "dec%" => g.dec_pct = first_f64(val),
+                "enc%" => g.enc_pct = first_f64(val),
+                "temp" | "temp(c)" => g.temp_c = first_f64(val),
+                "avgpwr" | "avgpwr(w)" | "power" | "power(w)" => g.power_w = first_f64(val),
+                "perf" => g.perf_level = Some(val.to_string()),
+                "mode" => g.mode = Some(val.to_string()),
+                "fan" | "fan%" => {
+                    let vl = val.to_lowercase();
+                    if vl.contains("rpm") {
+                        g.fan_rpm = first_f64(val).map(|f| f as u64);
+                    } else {
+                        g.fan_pct = first_f64(val);
+                    }
+                }
+                _ => apply_kv(&mut g, key, val),
+            }
+        }
+        finalize(&mut g);
+        gpus.push(g);
+    }
+    gpus
+}
+
+/// Copy slowly-changing extras (Dec/Enc/Perf/Mode/Fan) from the default-table
+/// snapshot into the main samples, matched by card index.
+fn merge_extras(gpus: &mut [GpuSample], extras: &[GpuSample]) {
+    for g in gpus.iter_mut() {
+        if let Some(e) = extras.iter().find(|e| e.index == g.index) {
+            if g.dec_pct.is_none() {
+                g.dec_pct = e.dec_pct;
+            }
+            if g.enc_pct.is_none() {
+                g.enc_pct = e.enc_pct;
+            }
+            if g.perf_level.is_none() {
+                g.perf_level = e.perf_level.clone();
+            }
+            if g.mode.is_none() {
+                g.mode = e.mode.clone();
+            }
+            if g.fan_pct.is_none() {
+                g.fan_pct = e.fan_pct;
+            }
+            if g.fan_rpm.is_none() {
+                g.fan_rpm = e.fan_rpm;
+            }
+        }
+    }
+}
+
 fn parse_text(out: &str, backend: &str) -> GpuSnapshot {
     let mut snap = GpuSnapshot {
         backend: backend.into(),
@@ -813,5 +978,86 @@ HCU[0]\t\t: Card Series:\t\t BW
         assert_eq!(g.power_w, Some(89.0));
         assert_eq!(g.sclk_mhz, Some(1500));
         assert_eq!(g.name, "BW");
+    }
+}
+
+#[cfg(test)]
+mod tests_extras {
+    use super::*;
+
+    #[test]
+    fn test_parse_default_table() {
+        let out = "\
+================================= System Management Interface ==================================
+HCU     Temp     AvgPwr     Perf     PwrCap     VRAM%      HCU%      Dec%      Enc%      Mode     
+0       52.0C    89.0W      manual   1000.0W    2%         7.5%      12.0%     3.0%      Normal   
+1       77.0C    210.0W     auto     1000.0W    55%        91.0%     0.0%      0.0%      Power Saving
+================================================================================================
+";
+        let gpus = parse_default_table(out);
+        assert_eq!(gpus.len(), 2);
+        assert_eq!(gpus[0].index, 0);
+        assert_eq!(gpus[0].util, Some(7.5));
+        assert_eq!(gpus[0].vram_pct, Some(2.0));
+        assert_eq!(gpus[0].dec_pct, Some(12.0));
+        assert_eq!(gpus[0].enc_pct, Some(3.0));
+        assert_eq!(gpus[0].temp_c, Some(52.0));
+        assert_eq!(gpus[0].power_w, Some(89.0));
+        assert_eq!(gpus[0].perf_level.as_deref(), Some("manual"));
+        assert_eq!(gpus[0].mode.as_deref(), Some("Normal"));
+        assert_eq!(gpus[1].mode.as_deref(), Some("Power Saving"));
+        assert_eq!(gpus[1].util, Some(91.0));
+    }
+
+    #[test]
+    fn test_apply_kv_dec_enc_perf_mode_fan() {
+        let mut g = GpuSample::default();
+        apply_kv(&mut g, "Dec%", "12.0");
+        apply_kv(&mut g, "Enc%", "3.5");
+        apply_kv(&mut g, "Perf Level", "manual");
+        apply_kv(&mut g, "Mode", "Normal");
+        apply_kv(&mut g, "Fan Speed", "45%");
+        assert_eq!(g.dec_pct, Some(12.0));
+        assert_eq!(g.enc_pct, Some(3.5));
+        assert_eq!(g.perf_level.as_deref(), Some("manual"));
+        assert_eq!(g.mode.as_deref(), Some("Normal"));
+        assert_eq!(g.fan_pct, Some(45.0));
+    }
+
+    #[test]
+    fn test_mode_does_not_clobber_model() {
+        let mut g = GpuSample::default();
+        apply_kv(&mut g, "Card Model", "K100-AI");
+        apply_kv(&mut g, "Mode", "Power Saving");
+        finalize(&mut g);
+        assert_eq!(g.name, "K100-AI");
+        assert_eq!(g.mode.as_deref(), Some("Power Saving"));
+    }
+
+    #[test]
+    fn test_pcie_clock_not_mistaken_for_bandwidth() {
+        let mut g = GpuSample::default();
+        apply_kv(&mut g, "pcie clock level", "2");
+        apply_kv(&mut g, "pcie clock speed", "32.0GT/s, x16 1100Mhz");
+        assert_eq!(g.pcie_tx_mbps, None);
+        assert_eq!(g.pcie_rx_mbps, None);
+        // a real bandwidth key is still accepted
+        apply_kv(&mut g, "PCIe Tx (MB/s)", "1536");
+        assert_eq!(g.pcie_tx_mbps, Some(1536.0));
+    }
+
+    #[test]
+    fn test_merge_extras() {
+        let mut gpus = vec![GpuSample { index: 0, ..Default::default() }];
+        let extras = vec![GpuSample {
+            index: 0,
+            dec_pct: Some(1.0),
+            enc_pct: Some(2.0),
+            mode: Some("Normal".into()),
+            ..Default::default()
+        }];
+        merge_extras(&mut gpus, &extras);
+        assert_eq!(gpus[0].dec_pct, Some(1.0));
+        assert_eq!(gpus[0].enc_pct, Some(2.0));
     }
 }

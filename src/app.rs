@@ -1,6 +1,6 @@
 use crate::cli::Cli;
 use crate::collectors::cpu::{CpuCollector, CpuSample};
-use crate::collectors::gpu::{detect, GpuBackend, GpuSnapshot};
+use crate::collectors::gpu::{detect, GpuBackend, GpuSample, GpuSnapshot};
 use crate::collectors::mem::{self, MemStats};
 use crate::collectors::proc::{ProcCollector, ProcInfo};
 use crate::record::{RecordEntry, Recorder};
@@ -14,6 +14,18 @@ use std::time::{Duration, Instant};
 pub enum View {
     Detail,
     Summary,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum WarnLevel {
+    Warn,
+    Crit,
+}
+
+#[derive(Debug)]
+pub struct Warning {
+    pub level: WarnLevel,
+    pub text: String,
 }
 
 pub struct App {
@@ -46,6 +58,12 @@ pub struct App {
     pub history_len: usize,
     pub hostname: String,
     pub uptime: String,
+
+    pub warnings: Vec<Warning>,
+    pub temp_warn: f64,
+    pub temp_crit: f64,
+    idle_warn_secs: u64,
+    idle_streak: Vec<u32>,
 
     pub recorder: Option<Recorder>,
     _gpu_thread: Option<std::thread::JoinHandle<()>>,
@@ -159,6 +177,11 @@ impl App {
             history_len: cli.history.max(10),
             hostname,
             uptime,
+            warnings: Vec::new(),
+            temp_warn: cli.temp_warn,
+            temp_crit: cli.temp_crit,
+            idle_warn_secs: cli.idle_warn_secs,
+            idle_streak: Vec::new(),
             recorder,
             _gpu_thread: Some(handle),
         };
@@ -197,10 +220,13 @@ impl App {
         }
         self.total_procs = procs.len();
         procs.truncate(self.max_procs);
-        // RSS + cmdline only for the rows we actually display
+        // RSS + cmdline + container attribution only for displayed rows
         for p in procs.iter_mut() {
             self.proc_col.read_rss(p);
             p.cmd = ProcCollector::read_cmd(p.pid);
+            let (pod, cid) = ProcCollector::read_container(p.pid);
+            p.pod = pod;
+            p.container = cid;
         }
         self.procs = procs;
         if self.selected >= self.procs.len() {
@@ -246,7 +272,80 @@ impl App {
             };
             rec.maybe_write(&entry);
         }
+
+        self.update_warnings();
     }
+
+    /// Derive anomaly warnings from the latest snapshot. Kept intentionally
+    /// conservative: only sustained (not momentary) conditions warn.
+    fn update_warnings(&mut self) {
+        self.warnings = Self::compute_warnings(
+            &self.gpu.gpus,
+            &mut self.idle_streak,
+            self.temp_warn,
+            self.temp_crit,
+            self.idle_warn_secs,
+        );
+    }
+
+    /// Pure warning computation so it can be unit tested.
+    pub fn compute_warnings(
+    gpus: &[GpuSample],
+    idle_streak: &mut Vec<u32>,
+    temp_warn: f64,
+    temp_crit: f64,
+    idle_warn_secs: u64,
+) -> Vec<Warning> {
+    let mut warnings = Vec::new();
+    if idle_streak.len() != gpus.len() {
+        *idle_streak = vec![0; gpus.len()];
+    }
+    for (i, g) in gpus.iter().enumerate() {
+        if let Some(t) = g.temp_c {
+            if t >= temp_crit {
+                warnings.push(Warning {
+                    level: WarnLevel::Crit,
+                    text: format!("DCU{} {:.0}C critical", g.index, t),
+                });
+            } else if t >= temp_warn {
+                warnings.push(Warning {
+                    level: WarnLevel::Warn,
+                    text: format!("DCU{} {:.0}C hot", g.index, t),
+                });
+            }
+        }
+        if let Some(m) = &g.mode {
+            let ml = m.to_lowercase();
+            if ml.contains("power saving") || ml.contains("throttl") || ml.contains("low") {
+                warnings.push(Warning {
+                    level: WarnLevel::Warn,
+                    text: format!("DCU{} throttled ({})", g.index, m),
+                });
+            }
+        }
+        // idle yet holding memory: usually a stalled/idle job
+        let util = g.util.unwrap_or(100.0);
+        let vram_pct = match (g.vram_used_mb, g.vram_total_mb) {
+            (Some(u), Some(t)) if t > 0.0 => u / t * 100.0,
+            _ => 0.0,
+        };
+        if util < 5.0 && vram_pct > 30.0 {
+            idle_streak[i] += 1;
+            if idle_streak[i] as u64 == idle_warn_secs.max(1) {
+                warnings.push(Warning {
+                    level: WarnLevel::Warn,
+                    text: format!(
+                        "DCU{} idle {}s but {:.0}% HBM held",
+                        g.index, idle_streak[i], vram_pct
+                    ),
+                });
+            }
+        } else {
+            idle_streak[i] = 0;
+        }
+    }
+    warnings
+}
 
     pub fn scroll(&mut self, delta: i64) {
         let len = self.procs.len().min(self.max_procs) as i64;
@@ -351,5 +450,56 @@ fn push_hist(q: &mut VecDeque<f64>, v: f64, cap: usize) {
     q.push_back(v);
     while q.len() > cap {
         q.pop_front();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn gpu(index: usize, temp: f64, mode: &str, util: f64, vram_pct: f64) -> GpuSample {
+        GpuSample {
+            index,
+            temp_c: Some(temp),
+            mode: Some(mode.to_string()),
+            util: Some(util),
+            vram_used_mb: Some(65520.0 * vram_pct / 100.0),
+            vram_total_mb: Some(65520.0),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_temp_and_throttle_warnings() {
+        let gpus = vec![
+            gpu(0, 70.0, "Normal", 93.0, 55.0),
+            gpu(2, 88.0, "Power Saving", 93.0, 55.0),
+        ];
+        let mut streak = Vec::new();
+        let w = App::compute_warnings(&gpus, &mut streak, 75.0, 85.0, 10);
+        let texts: Vec<&str> = w.iter().map(|w| w.text.as_str()).collect();
+        assert!(texts.contains(&"DCU2 88C critical"), "got {texts:?}");
+        assert!(
+            texts.iter().any(|t| t.contains("throttled")),
+            "throttle warning missing: {texts:?}"
+        );
+        assert!(!texts.iter().any(|t| t.contains("DCU0")), "unexpected DCU0 warn: {texts:?}");
+    }
+
+    #[test]
+    fn test_idle_holding_memory_needs_sustained() {
+        let gpus = vec![gpu(0, 50.0, "Normal", 1.0, 80.0)];
+        let mut streak = Vec::new();
+        for i in 1..=9 {
+            let w = App::compute_warnings(&gpus, &mut streak, 75.0, 85.0, 10);
+            assert!(w.is_empty(), "warned too early at tick {i}: {w:?}");
+        }
+        let w = App::compute_warnings(&gpus, &mut streak, 75.0, 85.0, 10);
+        assert!(w.iter().any(|w| w.text.contains("idle")), "no idle warning: {:?}", w.iter().map(|w| &w.text).collect::<Vec<_>>());
+        // becoming busy resets the streak
+        let busy = vec![gpu(0, 50.0, "Normal", 50.0, 80.0)];
+        let w = App::compute_warnings(&busy, &mut streak, 75.0, 85.0, 10);
+        assert!(w.is_empty());
+        assert_eq!(streak[0], 0);
     }
 }

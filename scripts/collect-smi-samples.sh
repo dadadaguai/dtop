@@ -59,7 +59,59 @@ run showmeminfo      --showmeminfo vram
 run showpids         --showpids
 run showbus          --showbus
 run combined         --showuse --showmemuse --showtemp --showpower --showclocks --showproductname --showmeminfo vram --showpids
-run default          # 无参数默认输出
+run default          # 无参数默认输出（含 Dec%/Enc%/Perf/Mode 列）
+
+# ── 深度监控功能所需的额外能力探测 ────────────────────────────────
+# 风扇转速 / 性能状态 / 降频 / PCIe 吞吐 / 拓扑
+run showfan          --showfan
+run showperflevel    --showperflevel
+run showpcie         --showpcie
+run showtopo         --showtopo
+run showtopotype     --showtopotype
+run showtopoweight   --showtopoweight
+run showtoponuma     --showtoponuma
+run showmaxpower     --showmaxpower
+run showthrottle     --showthrottle
+run showrealtimeactivity --showrealtimeactivity
+run showvoltage      --showvoltage
+# 默认表格里已经含 Dec%/Enc%，这里再单独探一次编解码相关开关
+run showmemuse_decenc --showmemuse --showuse
+
+# 探测该 smi 支持哪些 flag（用于后续适配）
+timeout 10 "$SMI" --help >"$DIR/smi-help.txt" 2>&1
+# 每个 flag 是否被接受（快速探测，只看退出码与是否有 stderr 报错）
+: >"$DIR/flag-support.txt"
+for flag in --showfan --showperflevel --showpcie --showtopo --showtopotype \
+            --showtopoweight --showtoponuma --showmaxpower --showthrottle \
+            --showrealtimeactivity --showvoltage; do
+    if timeout 8 "$SMI" "$flag" >/dev/null 2>"$DIR/_flag.err"; then
+        echo "$flag OK" >>"$DIR/flag-support.txt"
+    else
+        echo "$flag FAIL: $(head -c 120 "$DIR/_flag.err" | tr '\n' ' ')" >>"$DIR/flag-support.txt"
+    fi
+done
+rm -f "$DIR/_flag.err"
+
+# ── 进程归属与每进程 GPU 占用所需的本机信息 ───────────────────────
+# 取几个占用 DCU 的进程，采集 cgroup（容器/Pod 归属）与 fdinfo（引擎时间）
+{
+    mapfile -t PIDS < <(timeout 10 "$SMI" --showpids 2>/dev/null | grep -oE 'PID: [0-9]+' | awk '{print $2}')
+    echo "pids from showpids: ${PIDS[*]:-none}"
+    for pid in "${PIDS[@]:0:5}"; do
+        echo "===== pid $pid ====="
+        echo "--- cgroup ---"
+        cat "/proc/$pid/cgroup" 2>&1
+        echo "--- comm/cmdline ---"
+        cat "/proc/$pid/comm" 2>&1
+        tr '\0' ' ' <"/proc/$pid/cmdline" 2>&1
+        echo
+        echo "--- fdinfo (first 3 fds) ---"
+        for fd in $(ls "/proc/$pid/fdinfo" 2>/dev/null | head -3); do
+            echo "[fd $fd]"
+            cat "/proc/$pid/fdinfo/$fd" 2>&1
+        done
+    done
+} >"$DIR/proc-attribution.txt" 2>&1
 
 # dtop 实际运行验证（如果 dtop 在 PATH 或当前目录）
 DTOP=$(command -v dtop 2>/dev/null || echo "./dtop")

@@ -17,6 +17,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     let area = f.area();
 
     let proc_h = (app.max_procs as u16 + 3).clamp(5, area.height.saturating_sub(24).max(5));
+    let warn_h: u16 = if app.warnings.is_empty() { 0 } else { 1 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -24,6 +25,7 @@ pub fn draw(f: &mut Frame, app: &App) {
             Constraint::Length(14),
             Constraint::Min(8),
             Constraint::Length(proc_h),
+            Constraint::Length(warn_h),
             Constraint::Length(1),
         ])
         .split(area);
@@ -37,7 +39,10 @@ pub fn draw(f: &mut Frame, app: &App) {
     draw_mem(f, top[1], app, th);
     draw_gpu(f, chunks[2], app, th);
     draw_procs(f, chunks[3], app, th);
-    draw_hints(f, chunks[4], app, th);
+    if warn_h > 0 {
+        draw_warnings(f, chunks[4], app, th);
+    }
+    draw_hints(f, chunks[5], app, th);
 
     if app.show_help {
         draw_help(f, area, th);
@@ -552,7 +557,7 @@ fn draw_gpu_card(
         return;
     }
 
-    let stat_lines = vec![
+    let mut stat_lines = vec![
         Line::from({
             let mut s = stat_span("UTIL", util_s, util_c, th);
             s.extend(stat_span(
@@ -586,10 +591,46 @@ fn draw_gpu_card(
             s
         }),
     ];
+    // third line: video engines / fan / perf / mode, only if we have any
+    {
+        let mut s: Vec<Span<'static>> = Vec::new();
+        if let Some(d) = g.dec_pct {
+            s.extend(stat_span("DEC", format!("{d:.0}%"), th.cyan, th));
+        }
+        if let Some(e) = g.enc_pct {
+            s.extend(stat_span("ENC", format!("{e:.0}%"), th.green, th));
+        }
+        if let Some(f) = g.fan_pct {
+            s.extend(stat_span("FAN", format!("{f:.0}%"), th.dim, th));
+        } else if let Some(r) = g.fan_rpm {
+            s.extend(stat_span("FAN", format!("{r}rpm"), th.dim, th));
+        }
+        if let Some(p) = &g.perf_level {
+            if p.to_lowercase() != "auto" {
+                s.extend(stat_span("PERF", p.clone(), th.dim, th));
+            }
+        }
+        if let Some(m) = &g.mode {
+            let ml = m.to_lowercase();
+            if !ml.is_empty() && ml != "normal" {
+                let mc = if ml.contains("power saving") || ml.contains("throttl") || ml.contains("low")
+                {
+                    th.red
+                } else {
+                    th.yellow
+                };
+                s.extend(stat_span("MODE", m.clone(), mc, th));
+            }
+        }
+        if !s.is_empty() {
+            stat_lines.push(Line::from(s));
+        }
+    }
+    let stats_h = stat_lines.len() as u16;
 
     let split = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(2), Constraint::Min(3)])
+        .constraints([Constraint::Length(stats_h), Constraint::Min(3)])
         .split(inner);
     f.render_widget(Paragraph::new(stat_lines), split[0]);
 
@@ -659,6 +700,10 @@ fn draw_gpu_summary(
     snap: &GpuSnapshot,
 ) {
     let bar_w = 14usize;
+    // add DEC/ENC + FAN columns only when the smi backend reports them
+    let has_decenc = snap.gpus.iter().any(|g| g.dec_pct.is_some() || g.enc_pct.is_some());
+    let has_fan = snap.gpus.iter().any(|g| g.fan_pct.is_some() || g.fan_rpm.is_some());
+
     let rows: Vec<Row> = snap
         .gpus
         .iter()
@@ -670,7 +715,7 @@ fn draw_gpu_summary(
                 (Some(u), Some(t)) => format!("{:.1}/{:.0}G", u / 1024.0, t / 1024.0),
                 _ => "N/A".into(),
             };
-            Row::new(vec![
+            let mut cells = vec![
                 cell(format!("DCU{}", g.index), th.title),
                 cell(truncate(&g.name, 16), th.dim),
                 TCell::from(bar),
@@ -688,30 +733,61 @@ fn draw_gpu_summary(
                     g.sclk_mhz.map(|c| format!("{c}M")).unwrap_or_else(|| "N/A".into()),
                     th.text,
                 ),
-            ])
+            ];
+            if has_decenc {
+                cells.push(cell(
+                    format!(
+                        "{}/{}",
+                        g.dec_pct.map(|d| format!("{d:.0}")).unwrap_or_else(|| "-".into()),
+                        g.enc_pct.map(|e| format!("{e:.0}")).unwrap_or_else(|| "-".into())
+                    ),
+                    th.cyan,
+                ));
+            }
+            if has_fan {
+                let fan = g
+                    .fan_pct
+                    .map(|f| format!("{f:.0}%"))
+                    .or_else(|| g.fan_rpm.map(|r| format!("{r}rpm")))
+                    .unwrap_or_else(|| "-".into());
+                cells.push(cell(fan, th.dim));
+            }
+            Row::new(cells)
         })
         .collect();
 
+    let mut headers = vec!["CARD", "MODEL", "GPU-UTIL", "UTIL", "HBM", "TEMP", "POWER", "SCLK"];
+    if has_decenc {
+        headers.push("DEC/ENC");
+    }
+    if has_fan {
+        headers.push("FAN");
+    }
     let header = Row::new(
-        ["CARD", "MODEL", "GPU-UTIL", "UTIL", "HBM", "TEMP", "POWER", "SCLK"]
+        headers
             .iter()
             .map(|h| Span::styled(*h, Style::default().fg(th.dim)))
             .collect::<Vec<_>>(),
     );
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Length(6),
-            Constraint::Length(18),
-            Constraint::Length(bar_w as u16 + 1),
-            Constraint::Length(5),
-            Constraint::Length(10),
-            Constraint::Length(5),
-            Constraint::Length(6),
-            Constraint::Length(6),
-        ],
-    )
-    .header(header);
+
+    let mut widths = vec![
+        Constraint::Length(6),
+        Constraint::Length(18),
+        Constraint::Length(bar_w as u16 + 1),
+        Constraint::Length(5),
+        Constraint::Length(10),
+        Constraint::Length(5),
+        Constraint::Length(6),
+        Constraint::Length(6),
+    ];
+    if has_decenc {
+        widths.push(Constraint::Length(9));
+    }
+    if has_fan {
+        widths.push(Constraint::Length(7));
+    }
+
+    let table = Table::new(rows, widths).header(header);
     f.render_widget(table, area);
 }
 
@@ -736,6 +812,13 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, th: &Theme) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
+    // show the container/pod column only when something is containerized
+    let show_pod = app
+        .procs
+        .iter()
+        .take(app.max_procs)
+        .any(|p| !p.pod.is_empty() || !p.container.is_empty());
+
     let rows: Vec<Row> = app
         .procs
         .iter()
@@ -755,7 +838,14 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, th: &Theme) {
             } else {
                 "-".into()
             };
-            Row::new(vec![
+            let pod = if !p.pod.is_empty() {
+                p.pod.clone()
+            } else if !p.container.is_empty() {
+                p.container.clone()
+            } else {
+                "-".into()
+            };
+            let mut cells = vec![
                 Span::styled(p.pid.to_string(), Style::default().fg(th.text)),
                 Span::styled(truncate(&p.user, 9), Style::default().fg(th.dim)),
                 Span::styled(
@@ -770,38 +860,67 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, th: &Theme) {
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(hbm, Style::default().fg(th.orange)),
-                Span::styled(p.cmd.clone(), Style::default().fg(th.text)),
-            ])
+            ];
+            if show_pod {
+                cells.push(Span::styled(pod, Style::default().fg(th.green)));
+            }
+            cells.push(Span::styled(p.cmd.clone(), Style::default().fg(th.text)));
+            Row::new(cells)
         })
         .collect();
 
+    let mut headers = vec!["PID", "USER", "CPU%", "MEM%", "DCU", "HBM"];
+    if show_pod {
+        headers.push("POD");
+    }
+    headers.push("COMMAND");
     let header = Row::new(
-        vec!["PID", "USER", "CPU%", "MEM%", "DCU", "HBM", "COMMAND"]
+        headers
             .into_iter()
             .map(|h| Span::styled(h, Style::default().fg(th.dim)))
             .collect::<Vec<_>>(),
     )
     .style(Style::default());
 
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Length(7),
-            Constraint::Length(10),
-            Constraint::Length(6),
-            Constraint::Length(6),
-            Constraint::Length(6),
-            Constraint::Length(7),
-            Constraint::Min(20),
-        ],
-    )
-    .header(header)
-    .highlight_symbol("▸ ")
-    .row_highlight_style(Style::default().bg(th.sel).add_modifier(Modifier::BOLD));
+    let mut widths = vec![
+        Constraint::Length(7),
+        Constraint::Length(10),
+        Constraint::Length(6),
+        Constraint::Length(6),
+        Constraint::Length(6),
+        Constraint::Length(7),
+    ];
+    if show_pod {
+        widths.push(Constraint::Length(13));
+    }
+    widths.push(Constraint::Min(20));
+
+    let table = Table::new(rows, widths)
+        .header(header)
+        .highlight_symbol("▸ ")
+        .row_highlight_style(Style::default().bg(th.sel).add_modifier(Modifier::BOLD));
 
     // manual selection highlight via state
     let mut state = ratatui::widgets::TableState::default().with_selected(Some(app.selected));
     f.render_stateful_widget(table, inner, &mut state);
+}
+
+fn draw_warnings(f: &mut Frame, area: Rect, app: &App, th: &Theme) {
+    let mut spans = vec![Span::styled(
+        " ⚠ ",
+        Style::default().fg(th.red).add_modifier(Modifier::BOLD),
+    )];
+    for (i, w) in app.warnings.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(" · ", Style::default().fg(th.dim)));
+        }
+        let color = match w.level {
+            crate::app::WarnLevel::Crit => th.red,
+            crate::app::WarnLevel::Warn => th.yellow,
+        };
+        spans.push(Span::styled(w.text.clone(), Style::default().fg(color)));
+    }
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 fn draw_hints(f: &mut Frame, area: Rect, app: &App, th: &Theme) {

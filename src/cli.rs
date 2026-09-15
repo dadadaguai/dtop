@@ -60,4 +60,16 @@ pub struct Cli {
     /// number of history points kept for curves
     #[arg(long, default_value_t = 120, value_name = "N")]
     pub history: usize,
+
+    /// temperature warning threshold in Celsius (yellow)
+    #[arg(long, default_value_t = 75.0, value_name = "C")]
+    pub temp_warn: f64,
+
+    /// temperature critical threshold in Celsius (red)
+    #[arg(long, default_value_t = 85.0, value_name = "C")]
+    pub temp_crit: f64,
+
+    /// seconds a DCU must stay idle while holding HBM before warning
+    #[arg(long, default_value_t = 10, value_name = "SECS")]
+    pub idle_warn_secs: u64,
 }

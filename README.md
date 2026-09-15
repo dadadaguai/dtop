@@ -15,10 +15,12 @@
 
 ## 特性
 
-- **CPU**：总体 + 每核利用率渐变条形图、历史曲线、loadavg
+- **CPU**：总体 + 每核利用率渐变条形图、历史曲线、loadavg（≥32 核自动分组聚合）
 - **内存**：used/cache/avail、SWAP、全部 DCU 的 HBM 合计
-- **DCU**：每卡利用率/HBM 历史曲线（braille 字符）、温度/功耗/频率，温度超阈值变色告警；≥4 卡可切换汇总视图
-- **进程**：按 CPU%/MEM% 排序，显示进程占用的 DCU 卡号与 HBM，支持发送 SIGTERM（带确认）
+- **DCU**：每卡利用率/HBM 历史曲线（braille 字符）、温度/功耗/频率，温度超阈值变色告警；≥8 卡自适应网格或汇总视图
+- **DCU 深度指标**：编解码引擎利用率（DEC/ENC）、性能状态（Perf/Mode）、风扇转速（需 smi 支持）
+- **异常提示**：温度超阈值（黄/红）、降频状态、空闲但占用 HBM（疑似作业卡住）
+- **进程**：按 CPU%/MEM% 排序，显示进程占用的 DCU 卡号、HBM，**容器/Pod 归属**（k8s/docker），支持发送 SIGTERM（带确认）
 - **数据落地**：运行日志 + JSONL 指标记录，便于事后分析
 - **优雅降级**：无 DCU / 驱动未装 / smi 工具缺失时给出明确诊断指引，CPU/内存监控不受影响
 - **三主题**：dark / nord / light，真彩色
@@ -83,6 +85,9 @@ dtop -L /var/log/dtop.log --log-level debug               # 调试日志落地
 | `-r, --record <FILE>` | 指标 JSONL 落地（追加写） | - |
 | `--record-interval <S>` | 落地间隔 | 10 |
 | `--history <N>` | 曲线保留采样点数 | 120 |
+| `--temp-warn <C>` | 温度告警阈值（黄） | 75 |
+| `--temp-crit <C>` | 温度严重阈值（红） | 85 |
+| `--idle-warn-secs <S>` | DCU 空闲但占 HBM 持续多少秒后告警 | 10 |
 
 ### 快捷键
 
