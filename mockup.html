@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>dtop — UI Mockup</title>
+<style>
+  :root, body[data-theme="dark"] {
+    --bg: #0e1216;
+    --panel-bg: #131a20;
+    --border: #2b3945;
+    --title: #7fd4ff;
+    --text: #c7d3dd;
+    --dim: #6b7c8a;
+    --accent: #35e08a;
+    --accent2: #ffc94d;
+    --danger: #ff5d5d;
+    --gpu-line: #38d9f5;
+    --vram-line: #ff9f43;
+    --bar-bg: #1c2731;
+    --sel: #1f4b66;
+  }
+  body[data-theme="nord"] {
+    --bg: #242933;
+    --panel-bg: #2b313c;
+    --border: #434c5e;
+    --title: #88c0d0;
+    --text: #d8dee9;
+    --dim: #7b88a1;
+    --accent: #a3be8c;
+    --accent2: #ebcb8b;
+    --danger: #bf616a;
+    --gpu-line: #8fbcbb;
+    --vram-line: #d08770;
+    --bar-bg: #353d4d;
+    --sel: #434c5e;
+  }
+  body[data-theme="light"] {
+    --bg: #e9e6df;
+    --panel-bg: #f4f2ec;
+    --border: #b9b4a8;
+    --title: #1a6e8f;
+    --text: #33322e;
+    --dim: #85817a;
+    --accent: #1f8a4c;
+    --accent2: #b57f00;
+    --danger: #c22f2f;
+    --gpu-line: #0e7ea3;
+    --vram-line: #b35f1e;
+    --bar-bg: #d8d4ca;
+    --sel: #cfe3ec;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", Menlo, Consolas, "Noto Sans Mono CJK SC", monospace;
+    font-size: 13px;
+    padding: 10px 14px 20px;
+    transition: background .25s;
+  }
+
+  /* ── header ─────────────────────────── */
+  .topbar {
+    display: flex; align-items: baseline; gap: 18px;
+    padding: 2px 4px 10px;
+  }
+  .logo { font-size: 17px; font-weight: 700; letter-spacing: 1px; color: var(--title); }
+  .logo b { color: var(--accent); }
+  .host { color: var(--dim); }
+  .topbar .spacer { flex: 1; }
+  .btn {
+    background: transparent; border: 1px solid var(--border); color: var(--dim);
+    font: inherit; font-size: 12px; padding: 2px 10px; cursor: pointer; border-radius: 3px;
+  }
+  .btn:hover { color: var(--text); border-color: var(--dim); }
+  .btn.active { color: var(--bg); background: var(--title); border-color: var(--title); font-weight: 700; }
+  .clock { color: var(--accent); }
+
+  /* ── panels ─────────────────────────── */
+  .panel {
+    position: relative;
+    background: var(--panel-bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 14px 12px 10px;
+    margin-bottom: 10px;
+  }
+  .panel > .ptitle {
+    position: absolute; top: -9px; left: 12px;
+    background: var(--panel-bg);
+    padding: 0 8px;
+    color: var(--title);
+    font-weight: 700; font-size: 12px;
+    letter-spacing: .5px;
+    border-radius: 3px;
+  }
+  .ptitle .sub { color: var(--dim); font-weight: 400; }
+
+  .row { display: flex; gap: 10px; }
+  .row > .panel { flex: 1; margin-bottom: 10px; }
+  .cpu-panel { flex: 1.5 !important; }
+
+  /* ── CPU ────────────────────────────── */
+  .cpu-wrap { display: flex; gap: 14px; }
+  .cpu-big {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    min-width: 120px;
+  }
+  .cpu-big .pct { font-size: 34px; font-weight: 700; color: var(--accent); line-height: 1; }
+  .cpu-big .lbl { color: var(--dim); font-size: 11px; margin-top: 4px; }
+  .cpu-big canvas { margin-top: 8px; }
+  .cores { flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 3px 18px; }
+  .core { display: flex; align-items: center; gap: 6px; }
+  .core .cid { color: var(--dim); width: 30px; font-size: 11px; }
+  .core .cval { width: 40px; text-align: right; font-size: 11px; }
+  .bar { flex: 1; height: 9px; background: var(--bar-bg); border-radius: 2px; overflow: hidden; }
+  .bar i {
+    display: block; height: 100%; border-radius: 2px;
+    background: linear-gradient(90deg, var(--accent) 0%, var(--accent2) 70%, var(--danger) 100%);
+    background-size: 0 0; /* replaced by inline gradient trick below */
+    transition: width .5s ease;
+  }
+  .loadavg { margin-top: 8px; color: var(--dim); font-size: 12px; }
+  .loadavg b { color: var(--text); font-weight: 400; }
+
+  /* gradient bar fill: fixed-size gradient relative to bar container */
+  .bar { position: relative; }
+  .bar::before {
+    content: ""; position: absolute; inset: 0;
+    background: linear-gradient(90deg, var(--accent), var(--accent2) 65%, var(--danger));
+    width: var(--w, 0%);
+    transition: width .5s ease;
+    border-radius: 2px;
+  }
+  .bar i { display: none; }
+
+  /* ── MEM ────────────────────────────── */
+  .mem-line { display: flex; justify-content: space-between; font-size: 12px; margin: 6px 0 3px; }
+  .mem-line .k { color: var(--dim); }
+  .mem-line .v b { color: var(--text); font-weight: 700; }
+  .membar { height: 14px; background: var(--bar-bg); border-radius: 3px; overflow: hidden; display: flex; }
+  .membar .used { background: var(--accent); height: 100%; transition: width .5s; }
+  .membar .cache { background: var(--accent2); opacity: .75; height: 100%; transition: width .5s; }
+  .swapbar .used { background: var(--vram-line); }
+  .legend { display: flex; gap: 14px; font-size: 11px; color: var(--dim); margin-top: 5px; }
+  .legend i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 4px; }
+
+  /* ── DCU ────────────────────────────── */
+  .dcu-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .dcu-card .stats { display: flex; gap: 0; margin-bottom: 8px; }
+  .stat { flex: 1; text-align: center; padding: 2px 4px; border-right: 1px dashed var(--border); }
+  .stat:last-child { border-right: none; }
+  .stat .sv { font-size: 16px; font-weight: 700; }
+  .stat .sk { font-size: 10px; color: var(--dim); margin-top: 1px; }
+  .sv.ok { color: var(--accent); } .sv.warn { color: var(--accent2); } .sv.hot { color: var(--danger); }
+  .charts { display: flex; gap: 10px; }
+  .chart-box { flex: 1; }
+  .chart-box .cl { font-size: 10px; color: var(--dim); margin-bottom: 2px; display: flex; justify-content: space-between; }
+  .chart-box .cl b { font-weight: 700; }
+  canvas.curve { width: 100%; height: 56px; display: block; background: var(--bar-bg); border-radius: 3px; }
+
+  /* summary view */
+  .sum-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 5px 6px; border-bottom: 1px dashed var(--border); font-size: 12px;
+  }
+  .sum-row:last-child { border-bottom: none; }
+  .sum-row .id { color: var(--title); font-weight: 700; width: 52px; }
+  .sum-row .name { color: var(--dim); width: 130px; }
+  .sum-row .bar { max-width: 220px; }
+  .sum-row .num { width: 52px; text-align: right; }
+  .sum-row .temp { width: 56px; text-align: right; }
+  .sum-row .pwr { width: 70px; text-align: right; }
+  .sum-head { color: var(--dim); font-size: 11px; }
+
+  /* ── process table ──────────────────── */
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th { color: var(--dim); text-align: left; font-weight: 400; padding: 3px 8px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--panel-bg); }
+  td { padding: 3px 8px; border-bottom: 1px dashed color-mix(in srgb, var(--border) 45%, transparent); white-space: nowrap; }
+  tr.sel td { background: var(--sel); }
+  td.num, th.num { text-align: right; }
+  .tag { color: var(--gpu-line); font-weight: 700; }
+  .proc-scroll { max-height: 210px; overflow-y: auto; }
+  .proc-scroll::-webkit-scrollbar { width: 8px; }
+  .proc-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+  /* ── footer hints ───────────────────── */
+  .hints { display: flex; gap: 16px; color: var(--dim); font-size: 11px; padding: 2px 4px; flex-wrap: wrap; }
+  .hints kbd {
+    border: 1px solid var(--border); border-radius: 3px; padding: 0 5px;
+    color: var(--text); font: inherit; font-size: 11px; background: var(--panel-bg);
+  }
+  .note { color: var(--dim); font-size: 11px; padding: 8px 4px 0; }
+</style>
+</head>
+<body data-theme="dark">
+
+<div class="topbar">
+  <span class="logo">d<b>top</b> <span style="font-size:11px;color:var(--dim)">v0.1-mock</span></span>
+  <span class="host">hygon-dcu-node01 · DTK 24.04 · 8×K100-AI</span>
+  <span class="spacer"></span>
+  <button class="btn active" data-theme-btn="dark">dark</button>
+  <button class="btn" data-theme-btn="nord">nord</button>
+  <button class="btn" data-theme-btn="light">light</button>
+  <button class="btn active" id="viewDetail">详细视图</button>
+  <button class="btn" id="viewSummary">汇总视图</button>
+  <span class="clock" id="clock">--:--:--</span>
+</div>
+
+<div class="row">
+  <!-- CPU -->
+  <div class="panel cpu-panel">
+    <div class="ptitle">CPU <span class="sub">Hygon C86 7390 · 16C/32T</span></div>
+    <div class="cpu-wrap">
+      <div class="cpu-big">
+        <div class="pct" id="cpuTotal">--%</div>
+        <div class="lbl">TOTAL</div>
+        <canvas id="cpuHist" width="110" height="46"></canvas>
+      </div>
+      <div class="cores" id="cores"></div>
+    </div>
+    <div class="loadavg">load 1m <b id="l1">3.21</b> · 5m <b id="l5">2.87</b> · 15m <b id="l15">2.44</b> &nbsp;&nbsp; procs <b>412</b> &nbsp; up <b>13d 4h</b></div>
+  </div>
+
+  <!-- MEM -->
+  <div class="panel">
+    <div class="ptitle">MEMORY</div>
+    <div class="mem-line"><span class="k">RAM</span><span class="v"><b id="memUsed">187.4G</b> / 251.6G</span></div>
+    <div class="membar"><div class="used" id="memUsedBar" style="width:52%"></div><div class="cache" id="memCacheBar" style="width:22%"></div></div>
+    <div class="legend">
+      <span><i style="background:var(--accent)"></i>used <b id="memUsedL">187.4G</b></span>
+      <span><i style="background:var(--accent2)"></i>cache <b id="memCacheL">55.3G</b></span>
+      <span><i style="background:var(--bar-bg)"></i>avail <b id="memAvailL">64.2G</b></span>
+    </div>
+    <div class="mem-line" style="margin-top:14px"><span class="k">SWAP</span><span class="v"><b id="swapUsed">2.1G</b> / 32.0G</span></div>
+    <div class="membar swapbar"><div class="used" id="swapBar" style="width:6.5%"></div></div>
+    <div class="mem-line" style="margin-top:14px"><span class="k">HBM 合计</span><span class="v"><b>51.7G</b> / 64.0G (8 卡)</span></div>
+    <div class="membar"><div class="used" id="hbmBar" style="width:81%;background:var(--vram-line)"></div></div>
+  </div>
+</div>
+
+<!-- DCU detail -->
+<div class="panel" id="dcuPanel">
+  <div class="ptitle">DCU <span class="sub">Hygon K100-AI · backend: hy-smi · 1s</span></div>
+  <div class="dcu-grid" id="dcuGrid"></div>
+</div>
+
+<!-- DCU summary -->
+<div class="panel" id="sumPanel" style="display:none">
+  <div class="ptitle">DCU 汇总 <span class="sub">8 × Hygon K100-AI</span></div>
+  <div class="sum-row sum-head">
+    <span class="id">CARD</span><span class="name">MODEL</span>
+    <span style="flex:1;max-width:220px">GPU-UTIL</span><span class="num">UTIL%</span>
+    <span class="num" style="width:110px">VRAM</span>
+    <span class="temp">TEMP</span><span class="pwr">POWER</span><span class="num">SCLK</span>
+  </div>
+  <div id="sumRows"></div>
+</div>
+
+<!-- processes -->
+<div class="panel">
+  <div class="ptitle">PROCESSES <span class="sub">按 CPU% 排序 · 372 个进程 · 6 个占用 DCU</span></div>
+  <div class="proc-scroll">
+    <table>
+      <thead><tr>
+        <th style="width:70px">PID</th><th style="width:90px">USER</th>
+        <th class="num" style="width:64px">CPU%</th><th class="num" style="width:64px">MEM%</th>
+        <th style="width:110px">DCU</th><th class="num" style="width:90px">HBM</th><th>COMMAND</th>
+      </tr></thead>
+      <tbody id="procBody"></tbody>
+    </table>
+  </div>
+</div>
+
+<div class="hints">
+  <span><kbd>q</kbd> 退出</span><span><kbd>h</kbd> 帮助</span>
+  <span><kbd>Tab</kbd> 切换详细/汇总</span><span><kbd>↑↓</kbd> 选择进程</span>
+  <span><kbd>k</kbd> 结束进程</span><span><kbd>+/-</kbd> 刷新率</span>
+  <span><kbd>t</kbd> 主题</span><span><kbd>f</kbd> 过滤</span>
+</div>
+<div class="note">※ 这是 HTML 静态模拟稿，数据为随机游走仿真，用于确认布局 / 配色 / 信息密度。真实版本为终端 TUI（Rust + ratatui），字符渲染会更紧凑。</div>
+
+<script>
+const N_CORES = 16, N_DCU = 8, HIST = 60;
+const rnd = (a,b)=>a+Math.random()*(b-a);
+function walk(v, min, max, step){ v += rnd(-step, step); return Math.min(max, Math.max(min, v)); }
+
+/* ── theme buttons ── */
+document.querySelectorAll("[data-theme-btn]").forEach(b=>{
+  b.onclick = ()=>{
+    document.body.dataset.theme = b.dataset.themeBtn;
+    document.querySelectorAll("[data-theme-btn]").forEach(x=>x.classList.toggle("active", x===b));
+    drawAll();
+  };
+});
+
+/* ── view toggle ── */
+const detail = document.getElementById("dcuPanel"), summary = document.getElementById("sumPanel");
+document.getElementById("viewDetail").onclick = ()=>{ detail.style.display=""; summary.style.display="none";
+  document.getElementById("viewDetail").classList.add("active"); document.getElementById("viewSummary").classList.remove("active"); };
+document.getElementById("viewSummary").onclick = ()=>{ detail.style.display="none"; summary.style.display="";
+  document.getElementById("viewSummary").classList.add("active"); document.getElementById("viewDetail").classList.remove("active"); };
+
+/* ── state ── */
+let cores = Array.from({length:N_CORES},()=>rnd(3,60));
+let cpuHist = Array.from({length:HIST},()=>rnd(10,40));
+let memUsedPct = 52, memCachePct = 22, swapPct = 6.5;
+
+const dcus = Array.from({length:N_DCU},(_,i)=>({
+  util: rnd(20,95), vram: rnd(40,90), temp: rnd(38,62), power: rnd(90,260),
+  sclk: rnd(1200,1700)|0, mclk: 1600,
+  utilHist: Array.from({length:HIST},()=>rnd(20,90)),
+  vramHist: Array.from({length:HIST},()=>rnd(40,90)),
+}));
+
+/* ── build CPU cores ── */
+const coresEl = document.getElementById("cores");
+cores.forEach((_,i)=>{
+  const d = document.createElement("div"); d.className="core";
+  d.innerHTML = `<span class="cid">C${String(i).padStart(2,"0")}</span><div class="bar" id="cb${i}"></div><span class="cval" id="cv${i}">0%</span>`;
+  coresEl.appendChild(d);
+});
+
+/* ── build DCU cards (detail shows first 4, rest via summary) ── */
+const grid = document.getElementById("dcuGrid");
+for(let i=0;i<4;i++){
+  const c = document.createElement("div"); c.className="panel dcu-card"; c.style.marginBottom="0";
+  c.innerHTML = `
+    <div class="ptitle" style="font-size:11px">DCU ${i} <span class="sub">K100-AI · 0000:${(0x3b+i*2).toString(16)}:00.0</span></div>
+    <div class="stats">
+      <div class="stat"><div class="sv ok" id="d${i}util">--%</div><div class="sk">GPU-UTIL</div></div>
+      <div class="stat"><div class="sv" id="d${i}temp" style="color:var(--accent2)">--°C</div><div class="sk">TEMP</div></div>
+      <div class="stat"><div class="sv" id="d${i}pwr">--W</div><div class="sk">POWER</div></div>
+      <div class="stat"><div class="sv" id="d${i}clk" style="color:var(--gpu-line)">--</div><div class="sk">SCLK MHz</div></div>
+    </div>
+    <div class="charts">
+      <div class="chart-box"><div class="cl"><span>UTIL</span><b id="d${i}utilL" style="color:var(--gpu-line)">--%</b></div><canvas class="curve" id="d${i}uc"></canvas></div>
+      <div class="chart-box"><div class="cl"><span>HBM 64G</span><b id="d${i}vramL" style="color:var(--vram-line)">--</b></div><canvas class="curve" id="d${i}vc"></canvas></div>
+    </div>`;
+  grid.appendChild(c);
+}
+
+/* ── build summary rows ── */
+const sumRows = document.getElementById("sumRows");
+for(let i=0;i<N_DCU;i++){
+  const d=document.createElement("div"); d.className="sum-row";
+  d.innerHTML = `<span class="id">DCU ${i}</span><span class="name">K100-AI</span>
+    <div class="bar" id="sb${i}" style="flex:1;max-width:220px"></div>
+    <span class="num" id="su${i}">--%</span>
+    <span class="num" style="width:110px" id="sv${i}">--/--G</span>
+    <span class="temp" id="st${i}">--°C</span>
+    <span class="pwr" id="sp${i}">--W</span>
+    <span class="num" id="sc${i}">--</span>`;
+  sumRows.appendChild(d);
+}
+
+/* ── processes ── */
+const procs = [
+  {pid:88213,user:"train",cpu:187.2,mem:12.4,dcu:"0,1",hbm:"31.2G",cmd:"python train_llm.py --deepspeed --nodes 1"},
+  {pid:91044,user:"infer",cpu:96.8,mem:8.1,dcu:"2",hbm:"14.6G",cmd:"vllm serve qwen2-72b --tensor-parallel 1"},
+  {pid:77120,user:"train",cpu:64.3,mem:21.7,dcu:"3,4",hbm:"27.9G",cmd:"torchrun --nproc_per_node=2 finetune.py"},
+  {pid:12901,user:"root",cpu:22.1,mem:0.8,dcu:"-",hbm:"-",cmd:"/usr/bin/hy-smi --showuse -l 5"},
+  {pid:66023,user:"liangjd",cpu:11.4,mem:2.2,dcu:"-",hbm:"-",cmd:"dtop"},
+  {pid:45110,user:"infer",cpu:9.7,mem:5.6,dcu:"5",hbm:"6.3G",cmd:"python embedding_server.py --port 8080"},
+  {pid:30218,user:"root",cpu:4.2,mem:1.1,dcu:"-",hbm:"-",cmd:"/opt/dtk/bin/kfd_monitor"},
+  {pid:51244,user:"ops",cpu:3.8,mem:3.4,dcu:"-",hbm:"-",cmd:"node_exporter --web.listen :9100"},
+  {pid:22871,user:"liangjd",cpu:2.1,mem:0.9,dcu:"-",hbm:"-",cmd:"bash"},
+  {pid:10933,user:"root",cpu:1.2,mem:0.4,dcu:"-",hbm:"-",cmd:"sshd -D"},
+  {pid:60127,user:"train",cpu:0.9,mem:6.8,dcu:"6,7",hbm:"12.1G",cmd:"python eval_bench.py --device dcu"},
+];
+const pb = document.getElementById("procBody");
+procs.forEach((p,i)=>{
+  const tr=document.createElement("tr"); if(i===0) tr.className="sel";
+  tr.innerHTML = `<td>${p.pid}</td><td>${p.user}</td><td class="num">${p.cpu.toFixed(1)}</td><td class="num">${p.mem.toFixed(1)}</td>
+    <td class="tag">${p.dcu}</td><td class="num">${p.hbm}</td><td>${p.cmd}</td>`;
+  pb.appendChild(tr);
+});
+
+/* ── chart drawing ── */
+function css(v){ return getComputedStyle(document.body).getPropertyValue(v).trim(); }
+function drawCurve(canvas, data, color, max=100){
+  const dpr = window.devicePixelRatio||1;
+  const w = canvas.clientWidth||canvas.width, h = canvas.clientHeight||canvas.height;
+  canvas.width = w*dpr; canvas.height = h*dpr;
+  const ctx = canvas.getContext("2d"); ctx.scale(dpr,dpr);
+  ctx.clearRect(0,0,w,h);
+  // grid
+  ctx.strokeStyle = css("--border"); ctx.globalAlpha=.5; ctx.lineWidth=.5;
+  for(let g=1;g<4;g++){ ctx.beginPath(); ctx.moveTo(0,h*g/4); ctx.lineTo(w,h*g/4); ctx.stroke(); }
+  ctx.globalAlpha=1;
+  const n=data.length, dx=w/(n-1);
+  ctx.beginPath();
+  data.forEach((v,i)=>{ const x=i*dx, y=h-(v/max)*(h-4)-2; i?ctx.lineTo(x,y):ctx.moveTo(x,y); });
+  ctx.strokeStyle=color; ctx.lineWidth=1.6; ctx.stroke();
+  ctx.lineTo(w,h); ctx.lineTo(0,h); ctx.closePath();
+  const grad=ctx.createLinearGradient(0,0,0,h);
+  grad.addColorStop(0,color+"66"); grad.addColorStop(1,color+"05");
+  ctx.fillStyle=grad; ctx.fill();
+}
+function drawAll(){
+  drawCurve(document.getElementById("cpuHist"), cpuHist, css("--accent"));
+  for(let i=0;i<4;i++){
+    drawCurve(document.getElementById(`d${i}uc`), dcus[i].utilHist, css("--gpu-line"));
+    drawCurve(document.getElementById(`d${i}vc`), dcus[i].vramHist, css("--vram-line"));
+  }
+}
+window.addEventListener("resize", drawAll);
+
+/* ── tick ── */
+function tempClass(t){ return t<55?"ok":t<70?"warn":"hot"; }
+function tick(){
+  // cpu
+  cores = cores.map(v=>walk(v,1,99,14));
+  const total = cores.reduce((a,b)=>a+b)/cores.length;
+  cpuHist.push(total); cpuHist.shift();
+  document.getElementById("cpuTotal").textContent = total.toFixed(0)+"%";
+  cores.forEach((v,i)=>{
+    document.getElementById("cb"+i).style.setProperty("--w", v.toFixed(0)+"%");
+    document.getElementById("cv"+i).textContent = v.toFixed(0)+"%";
+  });
+  document.getElementById("l1").textContent = walk(parseFloat(document.getElementById("l1").textContent),0.5,12,.4).toFixed(2);
+
+  // mem
+  memUsedPct = walk(memUsedPct,40,70,1.5); memCachePct = walk(memCachePct,15,30,.8); swapPct=walk(swapPct,4,12,.4);
+  document.getElementById("memUsedBar").style.width = memUsedPct+"%";
+  document.getElementById("memCacheBar").style.width = memCachePct+"%";
+  document.getElementById("swapBar").style.width = swapPct+"%";
+  const usedG = (251.6*memUsedPct/100);
+  document.getElementById("memUsed").textContent = usedG.toFixed(1)+"G";
+  document.getElementById("memUsedL").textContent = usedG.toFixed(1)+"G";
+  document.getElementById("memCacheL").textContent = (251.6*memCachePct/100).toFixed(1)+"G";
+  document.getElementById("memAvailL").textContent = (251.6*(100-memUsedPct-memCachePct)/100).toFixed(1)+"G";
+  document.getElementById("swapUsed").textContent = (32*swapPct/100).toFixed(1)+"G";
+
+  // dcu
+  let hbmTotal=0;
+  dcus.forEach((d,i)=>{
+    d.util = walk(d.util,5,99,8); d.vram = walk(d.vram,30,95,2);
+    d.temp = walk(d.temp,35,78,1.2); d.power = walk(d.power,80,300,12); d.sclk = walk(d.sclk,1000,1800,60)|0;
+    d.utilHist.push(d.util); d.utilHist.shift();
+    d.vramHist.push(d.vram); d.vramHist.shift();
+    hbmTotal += 64*d.vram/100;
+    if(i<4){
+      document.getElementById(`d${i}util`).textContent = d.util.toFixed(0)+"%";
+      const tEl=document.getElementById(`d${i}temp`); tEl.textContent=d.temp.toFixed(0)+"°C"; tEl.className="sv "+tempClass(d.temp);
+      document.getElementById(`d${i}pwr`).textContent = d.power.toFixed(0)+"W";
+      document.getElementById(`d${i}clk`).textContent = d.sclk;
+      document.getElementById(`d${i}utilL`).textContent = d.util.toFixed(0)+"%";
+      document.getElementById(`d${i}vramL`).textContent = (64*d.vram/100).toFixed(1)+"/64G";
+    }
+    document.getElementById("sb"+i).style.setProperty("--w", d.util.toFixed(0)+"%");
+    document.getElementById("su"+i).textContent = d.util.toFixed(0)+"%";
+    document.getElementById("sv"+i).textContent = (64*d.vram/100).toFixed(1)+"/64G";
+    const st=document.getElementById("st"+i); st.textContent=d.temp.toFixed(0)+"°C"; st.style.color=`var(--${d.temp<55?"accent":d.temp<70?"accent2":"danger"})`;
+    document.getElementById("sp"+i).textContent = d.power.toFixed(0)+"W";
+    document.getElementById("sc"+i).textContent = d.sclk;
+  });
+  document.getElementById("hbmBar").style.width = (hbmTotal/(64*N_DCU)*100)+"%";
+  drawAll();
+  document.getElementById("clock").textContent = new Date().toLocaleTimeString("zh-CN",{hour12:false});
+}
+tick(); setInterval(tick, 1000);
+</script>
+</body>
+</html>
