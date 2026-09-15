@@ -61,11 +61,15 @@ pub fn run(cli: &Cli, backend: &dyn GpuBackend) -> Result<()> {
     let gpu_by_pid: std::collections::HashMap<u32, &_> =
         snap.procs.iter().map(|p| (p.pid, p)).collect();
     for g in &snap.gpus {
+        let util_s = g
+            .util
+            .map(|u| format!("{u:>3.0}%"))
+            .unwrap_or_else(|| "N/A ".into());
         println!(
-            "DCU{} {}  util {:>3.0}%  hbm {}/{}  {}°C  {}W  sclk {}MHz",
+            "DCU{} {}  util {}  hbm {}/{}  {}°C  {}W  sclk {}MHz",
             g.index,
             g.name,
-            g.util.unwrap_or(f64::NAN),
+            util_s,
             g.vram_used_mb
                 .map(|v| format!("{:.1}G", v / 1024.0))
                 .unwrap_or_else(|| "N/A".into()),

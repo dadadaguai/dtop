@@ -15,14 +15,24 @@ pub struct GpuSample {
     pub power_w: Option<f64>,
     pub sclk_mhz: Option<u64>,
     pub mclk_mhz: Option<u64>,
+    #[serde(skip)]
+    pub vram_pct: Option<f64>,
+    #[serde(skip)]
+    pub name_model: String,
+    #[serde(skip)]
+    pub name_series: String,
+    #[serde(skip)]
+    pub name_sku: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct GpuProc {
     pub pid: u32,
     pub name: String,
     pub vram_mb: Option<f64>,
     pub gpu_ids: Vec<usize>,
+    #[serde(skip)]
+    pub pci_bus: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]

@@ -57,6 +57,7 @@ run showclocks       --showclocks
 run showproductname  --showproductname
 run showmeminfo      --showmeminfo vram
 run showpids         --showpids
+run showbus          --showbus
 run combined         --showuse --showmemuse --showtemp --showpower --showclocks --showproductname --showmeminfo vram --showpids
 run default          # 无参数默认输出
 

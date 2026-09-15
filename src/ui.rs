@@ -157,31 +157,54 @@ fn draw_cpu(f: &mut Frame, area: Rect, app: &App, th: &Theme) {
         left_split[1],
     );
 
-    // right: per-core bars in two columns
+    // right: per-core bars, adaptive grouping for high core counts
     let cores = &app.cpu.per_core;
-    let half = (cores.len() + 1) / 2;
+    let n = cores.len();
+    let avail_h = cols[1].height.max(1) as usize;
+    let ncols = if n <= 32 { 2 } else if n <= 72 { 3 } else { 4 };
+    let cells = ncols * avail_h;
+    // group adjacent cores when they don't fit individually
+    let group = if n <= cells { 1 } else { (n + cells - 1) / cells };
+    let shown = (n + group - 1) / group;
+    let per_col = (shown + ncols - 1) / ncols;
+
+    let mut col_constraints = Vec::new();
+    for _ in 0..ncols {
+        col_constraints.push(Constraint::Ratio(1, ncols as u32));
+    }
     let core_cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)])
+        .constraints(col_constraints)
         .split(cols[1]);
+
+    let label_w = if group == 1 { 4 } else { 8 };
     let bar_w = (core_cols[0].width as usize)
-        .saturating_sub(11)
-        .clamp(3, 30);
-    for (ci, range) in [(0..half), (half..cores.len())].into_iter().enumerate() {
+        .saturating_sub(label_w + 5)
+        .clamp(2, 30);
+
+    for ci in 0..ncols {
         let mut lines = Vec::new();
-        for i in range {
-            if let Some(v) = cores.get(i) {
-                let mut spans = vec![Span::styled(
-                    format!("C{i:0>2} "),
-                    Style::default().fg(th.dim),
-                )];
-                spans.extend(bar_spans(*v, bar_w, util_color(*v, th), th));
-                spans.push(Span::styled(
-                    format!(" {:3.0}%", v),
-                    Style::default().fg(th.text),
-                ));
-                lines.push(Line::from(spans));
+        for r in 0..per_col {
+            let cell_idx = ci * per_col + r;
+            let start = cell_idx * group;
+            if start >= n {
+                break;
             }
+            let end = (start + group).min(n);
+            let slice = &cores[start..end];
+            let avg = slice.iter().sum::<f64>() / slice.len() as f64;
+            let label = if group == 1 {
+                format!("C{start:0>2} ")
+            } else {
+                format!("C{}-{} ", start, end - 1)
+            };
+            let mut spans = vec![Span::styled(label, Style::default().fg(th.dim))];
+            spans.extend(bar_spans(avg, bar_w, util_color(avg, th), th));
+            spans.push(Span::styled(
+                format!(" {:3.0}%", avg),
+                Style::default().fg(th.text),
+            ));
+            lines.push(Line::from(spans));
         }
         f.render_widget(Paragraph::new(lines), core_cols[ci]);
     }
@@ -353,10 +376,10 @@ fn draw_gpu(f: &mut Frame, area: Rect, app: &App, th: &Theme) {
         .borders(Borders::ALL)
         .border_style(Style::default().fg(th.border))
         .title(Line::from(title_spans));
-    if snap.gpus.len() > 4 && app.view == View::Detail {
+    if app.view == View::Detail {
         block = block.title(
             Line::from(Span::styled(
-                format!("+{} cards · Tab for summary ", snap.gpus.len() - 4),
+                "Tab: summary view ",
                 Style::default().fg(th.dim),
             ))
             .alignment(Alignment::Right),
@@ -415,8 +438,22 @@ fn draw_gpu_detail(
     th: &Theme,
     snap: &GpuSnapshot,
 ) {
-    let n = snap.gpus.len().min(4);
-    let cols = if n <= 1 { 1 } else { 2 };
+    let n = snap.gpus.len();
+    if n == 0 {
+        return;
+    }
+    // adaptive grid: show ALL cards. pick column count from card count + width.
+    let cols = if n <= 2 {
+        n
+    } else if n <= 4 {
+        2
+    } else if area.width >= 150 {
+        4
+    } else if area.width >= 90 {
+        3
+    } else {
+        2
+    };
     let rows = (n + cols - 1) / cols;
     let mut constraints = Vec::new();
     for _ in 0..rows {
@@ -443,7 +480,7 @@ fn draw_gpu_detail(
             .split(*row_area);
         for (ci, card_area) in cards.iter().enumerate() {
             let idx = start + ci;
-            if idx >= snap.gpus.len() {
+            if idx >= n {
                 break;
             }
             draw_gpu_card(f, *card_area, app, th, snap, idx);
@@ -472,15 +509,52 @@ fn draw_gpu_card(
         .title_style(Style::default());
     let inner = block.inner(area);
     f.render_widget(block, area);
-    if inner.height < 5 || inner.width < 20 {
+    if inner.height < 1 || inner.width < 16 {
         return;
     }
 
-    let util = g.util.unwrap_or(0.0);
+    let util_s = g
+        .util
+        .map(|u| format!("{u:.0}%"))
+        .unwrap_or_else(|| "N/A".into());
+    let util_c = g.util.map(|u| util_color(u, th)).unwrap_or(th.dim);
     let temp = g.temp_c.unwrap_or(0.0);
-    let mut stat_lines = vec![
+    let vram_s = match (g.vram_used_mb, g.vram_total_mb) {
+        (Some(u), Some(t)) => format!("{:.1}/{:.0}G", u / 1024.0, t / 1024.0),
+        _ => "N/A".into(),
+    };
+
+    // compact mode: not enough height for charts, show stats only
+    if inner.height < 6 {
+        let mut s = stat_span("UTIL", util_s, util_c, th);
+        s.extend(stat_span(
+            "TEMP",
+            g.temp_c.map(|t| format!("{t:.0}C")).unwrap_or_else(|| "N/A".into()),
+            temp_color(temp, th),
+            th,
+        ));
+        s.extend(stat_span(
+            "PWR",
+            g.power_w.map(|p| format!("{p:.0}W")).unwrap_or_else(|| "N/A".into()),
+            th.orange,
+            th,
+        ));
+        if inner.height >= 3 {
+            s.extend(stat_span("HBM", vram_s, th.cyan, th));
+            s.extend(stat_span(
+                "SCLK",
+                g.sclk_mhz.map(|c| format!("{c}M")).unwrap_or_else(|| "N/A".into()),
+                th.text,
+                th,
+            ));
+        }
+        f.render_widget(Paragraph::new(Line::from(s)), inner);
+        return;
+    }
+
+    let stat_lines = vec![
         Line::from({
-            let mut s = stat_span("UTIL", format!("{util:.0}%"), util_color(util, th), th);
+            let mut s = stat_span("UTIL", util_s, util_c, th);
             s.extend(stat_span(
                 "TEMP",
                 g.temp_c.map(|t| format!("{t:.0}C")).unwrap_or_else(|| "N/A".into()),
@@ -496,10 +570,6 @@ fn draw_gpu_card(
             s
         }),
         Line::from({
-            let vram_s = match (g.vram_used_mb, g.vram_total_mb) {
-                (Some(u), Some(t)) => format!("{:.1}/{:.0}G", u / 1024.0, t / 1024.0),
-                _ => "N/A".into(),
-            };
             let mut s = stat_span("HBM", vram_s, th.cyan, th);
             s.extend(stat_span(
                 "SCLK",
@@ -516,9 +586,6 @@ fn draw_gpu_card(
             s
         }),
     ];
-    while stat_lines.len() < 2 {
-        stat_lines.push(Line::from(""));
-    }
 
     let split = Layout::default()
         .direction(Direction::Vertical)

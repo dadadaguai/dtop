@@ -73,6 +73,7 @@ impl GpuBackend for MockBackend {
                 power_w: Some(g.power),
                 sclk_mhz: Some(g.sclk as u64),
                 mclk_mhz: Some(1600),
+                ..Default::default()
             });
         }
         let procs = vec![
@@ -81,12 +82,14 @@ impl GpuBackend for MockBackend {
                 name: "mock-train".into(),
                 vram_mb: Some(31.2 * 1024.0),
                 gpu_ids: vec![0, 1],
+                ..Default::default()
             },
             GpuProc {
                 pid: 999992,
                 name: "mock-infer".into(),
                 vram_mb: Some(14.6 * 1024.0),
                 gpu_ids: vec![2],
+                ..Default::default()
             },
         ];
         Ok(GpuSnapshot {
