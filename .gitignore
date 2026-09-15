@@ -1,3 +1,4 @@
 /target
 *.log
 smi-samples-*
+/dist
