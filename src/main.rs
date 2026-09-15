@@ -101,26 +101,42 @@ fn main() -> Result<()> {
 fn run_loop(term: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<io::Stdout>>, cli: &Cli) -> Result<()> {
     let mut app = App::new(cli)?;
     let mut last_tick = Instant::now();
+    let mut dirty = true;
 
     loop {
         let elapsed = last_tick.elapsed().as_secs_f64();
         let timeout = Duration::from_secs_f64((app.interval - elapsed).max(0.02));
         if event::poll(timeout)? {
             match event::read()? {
-                Event::Key(k) if k.kind == KeyEventKind::Press => app.handle_key(k),
+                Event::Key(k) if k.kind == KeyEventKind::Press => {
+                    app.handle_key(k);
+                    dirty = true;
+                }
                 Event::Mouse(m) => match m.kind {
-                    MouseEventKind::ScrollUp => app.scroll(-1),
-                    MouseEventKind::ScrollDown => app.scroll(1),
+                    MouseEventKind::ScrollUp => {
+                        app.scroll(-1);
+                        dirty = true;
+                    }
+                    MouseEventKind::ScrollDown => {
+                        app.scroll(1);
+                        dirty = true;
+                    }
                     _ => {}
                 },
+                Event::Resize(..) => dirty = true,
                 _ => {}
             }
         }
         if last_tick.elapsed().as_secs_f64() >= app.interval {
             app.tick();
             last_tick = Instant::now();
+            dirty = true;
         }
-        term.draw(|f| ui::draw(f, &app))?;
+        // only redraw when a tick or an input actually changed something
+        if dirty {
+            term.draw(|f| ui::draw(f, &app))?;
+            dirty = false;
+        }
         if !app.running {
             break;
         }

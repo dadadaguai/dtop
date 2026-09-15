@@ -56,7 +56,7 @@ fn block_title<'a>(title: Span<'a>, th: &Theme) -> Block<'a> {
 }
 
 fn draw_header(f: &mut Frame, area: Rect, app: &App, th: &Theme) {
-    let snap = app.gpu_snapshot();
+    let snap = &app.gpu;
     let now = chrono::Local::now().format("%H:%M:%S").to_string();
     let line = Line::from(vec![
         Span::styled(
@@ -240,7 +240,7 @@ fn draw_mem(f: &mut Frame, area: Rect, app: &App, th: &Theme) {
     let m = &app.mem;
     let pct = |kb: u64| kb as f64 / m.total_kb.max(1) as f64 * 100.0;
 
-    let snap = app.gpu_snapshot();
+    let snap = &app.gpu;
     let hbm_total: f64 = snap
         .gpus
         .iter()
@@ -352,7 +352,7 @@ fn stat_span(label: &str, value: String, color: Color, th: &Theme) -> Vec<Span<'
 }
 
 fn draw_gpu(f: &mut Frame, area: Rect, app: &App, th: &Theme) {
-    let snap = app.gpu_snapshot();
+    let snap = &app.gpu;
     let mut title_spans = vec![
         Span::styled(" DCU ", Style::default().fg(th.title).add_modifier(Modifier::BOLD)),
         Span::styled(
@@ -426,8 +426,8 @@ fn draw_gpu(f: &mut Frame, area: Rect, app: &App, th: &Theme) {
     }
 
     match app.view {
-        View::Summary => draw_gpu_summary(f, inner, app, th, &snap),
-        View::Detail => draw_gpu_detail(f, inner, app, th, &snap),
+        View::Summary => draw_gpu_summary(f, inner, app, th, snap),
+        View::Detail => draw_gpu_detail(f, inner, app, th, snap),
     }
 }
 
@@ -720,12 +720,12 @@ fn cell(s: impl Into<String>, color: Color) -> TCell<'static> {
 }
 
 fn draw_procs(f: &mut Frame, area: Rect, app: &App, th: &Theme) {
-    let snap = app.gpu_snapshot();
+    let snap = &app.gpu;
     let block = block_title(
         Span::styled(
             format!(
                 " PROCESSES  {} total · {} on DCU · sort:{} ",
-                app.procs.len(),
+                app.total_procs,
                 snap.procs.len(),
                 if app.sort_by_mem { "MEM" } else { "CPU" }
             ),

@@ -91,11 +91,18 @@ pub fn run(cli: &Cli, backend: &dyn GpuBackend) -> Result<()> {
             "PID", "USER", "CPU%", "MEM%", "DCU", "HBM", "COMMAND"
         );
         if cli.sort == "mem" {
+            for p in procs.iter_mut() {
+                pc.read_rss(p);
+            }
             procs.sort_by(|a, b| b.mem_pct.partial_cmp(&a.mem_pct).unwrap());
         } else {
             procs.sort_by(|a, b| b.cpu_pct.partial_cmp(&a.cpu_pct).unwrap());
         }
-        for p in procs.iter().take(cli.procs) {
+        procs.truncate(cli.procs);
+        for p in procs.iter_mut() {
+            pc.read_rss(p);
+        }
+        for p in procs.iter() {
             let (dcu, hbm) = match gpu_by_pid.get(&p.pid) {
                 Some(gp) => (
                     if gp.gpu_ids.is_empty() {
@@ -113,7 +120,10 @@ pub fn run(cli: &Cli, backend: &dyn GpuBackend) -> Result<()> {
                 ),
                 None => ("-".into(), "-".into()),
             };
-            let cmd: String = p.cmd.chars().take(60).collect();
+            let cmd: String = proc::ProcCollector::read_cmd(p.pid)
+                .chars()
+                .take(60)
+                .collect();
             println!(
                 "{:<8}{:<12}{:>6.1}{:>7.1}  {:<8}{:>8}  {}",
                 p.pid, p.user, p.cpu_pct, p.mem_pct, dcu, hbm, cmd

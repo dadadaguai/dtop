@@ -32,9 +32,12 @@ pub struct App {
     pub mem: MemStats,
     pub proc_col: ProcCollector,
     pub procs: Vec<ProcInfo>,
+    pub total_procs: usize,
     pub max_procs: usize,
 
     pub gpu_state: Arc<Mutex<GpuSnapshot>>,
+    /// snapshot cached once per tick so the UI does not lock+clone per frame
+    pub gpu: GpuSnapshot,
     pub gpu_util_hist: Vec<VecDeque<f64>>,
     pub gpu_vram_hist: Vec<VecDeque<f64>>,
 
@@ -145,8 +148,10 @@ impl App {
             mem: MemStats::default(),
             proc_col: ProcCollector::new(),
             procs: vec![],
+            total_procs: 0,
             max_procs: cli.procs,
             gpu_state: shared,
+            gpu: GpuSnapshot::default(),
             gpu_util_hist: vec![],
             gpu_vram_hist: vec![],
             interval: cli.interval.clamp(0.2, 30.0),
@@ -164,10 +169,6 @@ impl App {
         Ok(app)
     }
 
-    pub fn gpu_snapshot(&self) -> GpuSnapshot {
-        self.gpu_state.lock().unwrap().clone()
-    }
-
     pub fn tick(&mut self) {
         if let Ok(s) = self.cpu_col.read() {
             self.cpu = s;
@@ -176,18 +177,30 @@ impl App {
             self.mem = m;
         }
 
-        let snap = self.gpu_snapshot();
+        // grab the latest GPU snapshot once per tick
+        self.gpu = self.gpu_state.lock().unwrap().clone();
         let mut procs = self.proc_col.scan();
         for p in procs.iter_mut() {
-            if let Some(gp) = snap.procs.iter().find(|g| g.pid == p.pid) {
+            if let Some(gp) = self.gpu.procs.iter().find(|g| g.pid == p.pid) {
                 p.gpu_ids = gp.gpu_ids.clone();
                 p.gpu_vram_mb = gp.vram_mb.unwrap_or(0.0);
             }
         }
         if self.sort_by_mem {
+            // memory sort needs RSS for every process
+            for p in procs.iter_mut() {
+                self.proc_col.read_rss(p);
+            }
             procs.sort_by(|a, b| b.mem_pct.partial_cmp(&a.mem_pct).unwrap());
         } else {
             procs.sort_by(|a, b| b.cpu_pct.partial_cmp(&a.cpu_pct).unwrap());
+        }
+        self.total_procs = procs.len();
+        procs.truncate(self.max_procs);
+        // RSS + cmdline only for the rows we actually display
+        for p in procs.iter_mut() {
+            self.proc_col.read_rss(p);
+            p.cmd = ProcCollector::read_cmd(p.pid);
         }
         self.procs = procs;
         if self.selected >= self.procs.len() {
@@ -196,17 +209,23 @@ impl App {
 
         // history
         push_hist(&mut self.cpu_hist, self.cpu.total, self.history_len);
-        let n = snap.gpus.len();
+        let n = self.gpu.gpus.len();
         if self.gpu_util_hist.len() != n {
             self.gpu_util_hist = vec![VecDeque::new(); n];
             self.gpu_vram_hist = vec![VecDeque::new(); n];
         }
-        for (i, g) in snap.gpus.iter().enumerate() {
-            let vram_pct = match (g.vram_used_mb, g.vram_total_mb) {
-                (Some(u), Some(t)) if t > 0.0 => u / t * 100.0,
-                _ => 0.0,
+        for i in 0..n {
+            let (util, vram_pct) = {
+                let g = &self.gpu.gpus[i];
+                (
+                    g.util.unwrap_or(0.0),
+                    match (g.vram_used_mb, g.vram_total_mb) {
+                        (Some(u), Some(t)) if t > 0.0 => u / t * 100.0,
+                        _ => 0.0,
+                    },
+                )
             };
-            push_hist(&mut self.gpu_util_hist[i], g.util.unwrap_or(0.0), self.history_len);
+            push_hist(&mut self.gpu_util_hist[i], util, self.history_len);
             push_hist(&mut self.gpu_vram_hist[i], vram_pct, self.history_len);
         }
 
@@ -223,7 +242,7 @@ impl App {
                 mem_avail_kb: self.mem.avail_kb,
                 swap_used_kb: self.mem.swap_used_kb(),
                 swap_total_kb: self.mem.swap_total_kb,
-                gpus: &snap.gpus,
+                gpus: &self.gpu.gpus,
             };
             rec.maybe_write(&entry);
         }
