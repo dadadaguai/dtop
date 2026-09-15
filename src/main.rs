@@ -16,7 +16,7 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use log::LevelFilter;
-use simplelog::{Config as LogConfig, WriteLogger};
+use simplelog::{ConfigBuilder as LogConfigBuilder, WriteLogger};
 use std::io;
 use std::time::{Duration, Instant};
 
@@ -41,11 +41,23 @@ fn init_logging(cli: &Cli) -> Result<Option<String>> {
     if let Some(parent) = std::path::Path::new(&path).parent() {
         std::fs::create_dir_all(parent)?;
     }
+    // rotate if the log grows beyond 5 MiB (debug/trace can grow fast)
+    let path_pb = std::path::Path::new(&path);
+    if let Ok(md) = std::fs::metadata(path_pb) {
+        if md.len() > 5 * 1024 * 1024 {
+            let _ = std::fs::rename(path_pb, format!("{path}.1"));
+        }
+    }
     let file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&path)?;
-    WriteLogger::init(level, LogConfig::default(), file)?;
+    // simplelog defaults to UTC; use local time so logs match `--once` output
+    let config = LogConfigBuilder::new()
+        .set_time_offset_to_local()
+        .unwrap_or_else(|b| b)
+        .build();
+    WriteLogger::init(level, config, file)?;
     Ok(Some(path))
 }
 

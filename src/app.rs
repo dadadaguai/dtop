@@ -60,9 +60,29 @@ impl App {
         let thread_state = shared.clone();
         let gi = Duration::from_secs_f64(cli.gpu_interval.max(0.2));
         let handle = std::thread::spawn(move || loop {
+            let cycle_start = Instant::now();
             match backend.collect() {
                 Ok(snap) => {
-                    log::debug!("gpu snapshot: {} cards", snap.gpus.len());
+                    log::debug!(
+                        "gpu snapshot: {} cards, {} procs, took {}ms",
+                        snap.gpus.len(),
+                        snap.procs.len(),
+                        cycle_start.elapsed().as_millis()
+                    );
+                    // trace level: full per-card values, useful for remote parser debugging
+                    for g in &snap.gpus {
+                        log::trace!(
+                            "card{} name={:?} util={:?} hbm={:?}/{:?}MB temp={:?}C pwr={:?}W sclk={:?}",
+                            g.index, g.name, g.util, g.vram_used_mb, g.vram_total_mb,
+                            g.temp_c, g.power_w, g.sclk_mhz
+                        );
+                    }
+                    for p in &snap.procs {
+                        log::trace!(
+                            "proc pid={} gpus={:?} vram={:?}MB",
+                            p.pid, p.gpu_ids, p.vram_mb
+                        );
+                    }
                     *thread_state.lock().unwrap() = snap;
                 }
                 Err(e) => {
@@ -71,7 +91,12 @@ impl App {
                     s.error = Some(e.to_string());
                 }
             }
-            std::thread::sleep(gi);
+            // keep the sampling period accurate: subtract the time the smi
+            // subprocess itself took, otherwise the interval drifts long
+            let elapsed = cycle_start.elapsed();
+            if elapsed < gi {
+                std::thread::sleep(gi - elapsed);
+            }
         });
 
         let hostname = std::fs::read_to_string("/proc/sys/kernel/hostname")
