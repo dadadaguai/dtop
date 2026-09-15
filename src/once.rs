@@ -45,8 +45,18 @@ pub fn run(cli: &Cli, backend: &dyn GpuBackend) -> Result<()> {
         mem::fmt_kb(ms.swap_total_kb)
     );
 
+    if snap.gpus.is_empty() {
+        let reason = snap
+            .error
+            .as_deref()
+            .unwrap_or("no DCU data (backend produced no cards)");
+        println!("DCU  none  [{reason}]");
+        println!("     hints: install DTK (hy-smi) / check driver (ls /dev/kfd) / demo: dtop -b mock");
+    }
     if let Some(err) = &snap.error {
-        println!("DCU  backend error: {err}");
+        if !snap.gpus.is_empty() {
+            println!("DCU  backend error: {err}");
+        }
     }
     let gpu_by_pid: std::collections::HashMap<u32, &_> =
         snap.procs.iter().map(|p| (p.pid, p)).collect();

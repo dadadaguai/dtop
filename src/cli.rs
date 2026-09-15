@@ -16,7 +16,8 @@ pub struct Cli {
     #[arg(short = 't', long, default_value = "dark", value_name = "THEME")]
     pub theme: String,
 
-    /// GPU backend: auto | hy-smi | rocm-smi | mock
+    /// GPU backend: auto | hy-smi | rocm-smi | mock | none
+    /// auto: hy-smi -> rocm-smi -> none (no fake data on machines without DCU)
     #[arg(short = 'b', long, default_value = "auto", value_name = "BACKEND")]
     pub backend: String,
 

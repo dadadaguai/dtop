@@ -52,11 +52,45 @@ fn which(cmd: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Check whether a DCU/GPU device node exists (driver loaded).
+pub fn dcu_device_present() -> bool {
+    std::path::Path::new("/dev/kfd").exists() || std::path::Path::new("/sys/class/kfd").exists()
+}
+
+/// Backend used when no DCU hardware/tooling is available. Returns an empty
+/// snapshot with an explanatory message instead of fake data.
+pub struct NoneBackend {
+    reason: String,
+}
+
+impl NoneBackend {
+    pub fn new(reason: &str) -> Self {
+        Self {
+            reason: reason.to_string(),
+        }
+    }
+}
+
+impl GpuBackend for NoneBackend {
+    fn name(&self) -> &str {
+        "none"
+    }
+    fn collect(&self) -> Result<GpuSnapshot> {
+        Ok(GpuSnapshot {
+            backend: "none".into(),
+            gpus: vec![],
+            procs: vec![],
+            error: Some(self.reason.clone()),
+        })
+    }
+}
+
 pub fn detect(pref: &str) -> Box<dyn GpuBackend> {
     match pref {
         "hy-smi" => Box::new(smi::SmiBackend::new("hy-smi")),
         "rocm-smi" => Box::new(smi::SmiBackend::new("rocm-smi")),
         "mock" => Box::new(mock::MockBackend::new(8)),
+        "none" => Box::new(NoneBackend::new("GPU backend disabled by user (-b none)")),
         _ => {
             if which("hy-smi") {
                 log::info!("auto-detect: using hy-smi");
@@ -64,9 +98,16 @@ pub fn detect(pref: &str) -> Box<dyn GpuBackend> {
             } else if which("rocm-smi") {
                 log::info!("auto-detect: using rocm-smi");
                 Box::new(smi::SmiBackend::new("rocm-smi"))
+            } else if dcu_device_present() {
+                log::warn!("auto-detect: DCU device present but no smi tool found");
+                Box::new(NoneBackend::new(
+                    "DCU device detected (/dev/kfd) but neither hy-smi nor rocm-smi found in PATH (install DTK toolkit)",
+                ))
             } else {
-                log::warn!("auto-detect: no hy-smi/rocm-smi found, falling back to mock data");
-                Box::new(mock::MockBackend::new(8))
+                log::warn!("auto-detect: no DCU device and no smi tool found");
+                Box::new(NoneBackend::new(
+                    "no DCU detected (/dev/kfd missing) - driver not installed or no DCU on this machine",
+                ))
             }
         }
     }

@@ -279,16 +279,23 @@ fn draw_mem(f: &mut Frame, area: Rect, app: &App, th: &Theme) {
             th,
         ),
         Line::from(""),
-        Line::from(vec![
-            Span::styled(
-                format!("HBM   {:.1}G", hbm_used),
+        if snap.gpus.is_empty() {
+            Line::from(Span::styled(
+                "HBM   N/A (no DCU)",
                 Style::default().fg(th.dim),
-            ),
-            Span::styled(
-                format!(" / {:.0}G ({} cards)", hbm_total, snap.gpus.len()),
-                Style::default().fg(th.dim),
-            ),
-        ]),
+            ))
+        } else {
+            Line::from(vec![
+                Span::styled(
+                    format!("HBM   {:.1}G", hbm_used),
+                    Style::default().fg(th.dim),
+                ),
+                Span::styled(
+                    format!(" / {:.0}G ({} cards)", hbm_total, snap.gpus.len()),
+                    Style::default().fg(th.dim),
+                ),
+            ])
+        },
         seg_bar(
             &[(
                 if hbm_total > 0.0 {
@@ -336,8 +343,9 @@ fn draw_gpu(f: &mut Frame, area: Rect, app: &App, th: &Theme) {
         ),
     ];
     if let Some(err) = &snap.error {
+        let short = if err.len() > 40 { &err[..40] } else { err };
         title_spans.push(Span::styled(
-            format!("· {err} "),
+            format!("· {short} "),
             Style::default().fg(th.red),
         ));
     }
@@ -358,16 +366,34 @@ fn draw_gpu(f: &mut Frame, area: Rect, app: &App, th: &Theme) {
     f.render_widget(block, area);
 
     if snap.gpus.is_empty() {
+        let reason = snap
+            .error
+            .clone()
+            .unwrap_or_else(|| "no DCU data (backend produced no cards)".into());
         let msg = Paragraph::new(Text::from(vec![
             Line::from(""),
             Line::from(Span::styled(
-                snap.error
-                    .clone()
-                    .unwrap_or_else(|| "no DCU detected (backend produced no data)".into()),
-                Style::default().fg(th.red),
+                "NO DCU AVAILABLE",
+                Style::default()
+                    .fg(th.dim)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(reason, Style::default().fg(th.yellow))),
+            Line::from(""),
+            Line::from(Span::styled(
+                "  hy-smi / rocm-smi not found  ->  install Hygon DTK toolkit",
+                Style::default().fg(th.dim),
             )),
             Line::from(Span::styled(
-                "check DTK installation / try: dtop -b mock",
+                "  /dev/kfd missing               ->  DCU driver not loaded",
+                Style::default().fg(th.dim),
+            )),
+            Line::from(Span::styled(
+                "  no DCU hardware                ->  dtop still works as CPU/MEM monitor",
+                Style::default().fg(th.dim),
+            )),
+            Line::from(Span::styled(
+                "  demo mode                      ->  dtop -b mock",
                 Style::default().fg(th.dim),
             )),
         ]))

@@ -50,10 +50,25 @@ impl GpuBackend for SmiBackend {
             }
             log::debug!("{}: --json output unparsable, falling back to text", self.cmd);
         }
-        let out = self
-            .run(false)
-            .with_context(|| format!("failed to run {}", self.cmd))?;
-        Ok(parse_text(&out, &self.cmd))
+        let out = match self.run(false) {
+            Ok(out) => out,
+            Err(e) => {
+                let hint = if !super::dcu_device_present() {
+                    " (hint: /dev/kfd not found - is the DCU driver loaded?)"
+                } else {
+                    ""
+                };
+                anyhow::bail!("{e}{hint}");
+            }
+        };
+        let mut snap = parse_text(&out, &self.cmd);
+        if snap.gpus.is_empty() && snap.error.is_none() {
+            snap.error = Some(format!(
+                "{} produced no GPU data (driver not loaded, no permission, or unsupported version)",
+                self.cmd
+            ));
+        }
+        Ok(snap)
     }
 }
 
