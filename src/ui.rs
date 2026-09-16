@@ -526,6 +526,9 @@ fn draw_gpu_detail(
     let off = app.gpu_scroll.min(max_off);
     let vis_rows = vis_rows.min(rows - off);
 
+    // one shared Y scale for every card so baselines and values line up
+    let y_max = shared_vram_y_max(app);
+
     let mut constraints = Vec::new();
     for _ in 0..vis_rows {
         constraints.push(Constraint::Ratio(1, vis_rows as u32));
@@ -554,7 +557,7 @@ fn draw_gpu_detail(
             if idx >= n {
                 break;
             }
-            draw_gpu_card(f, *card_area, app, th, snap, idx);
+            draw_gpu_card(f, *card_area, app, th, snap, idx, y_max);
         }
     }
 }
@@ -566,6 +569,7 @@ fn draw_gpu_card(
     th: &Theme,
     snap: &GpuSnapshot,
     idx: usize,
+    y_max: f64,
 ) {
     let g = &snap.gpus[idx];
     let numa_s = app
@@ -704,7 +708,23 @@ fn draw_gpu_card(
         .get(idx)
         .map(|h| h.iter().copied().collect())
         .unwrap_or_default();
-    render_curve(f, split[1], "VRAM%", &vram_data, th.orange, th);
+    render_curve(f, split[1], "VRAM%", &vram_data, th.orange, th, y_max);
+}
+
+/// Shared Y-axis maximum for every DCU chart, so that all cards use the same
+/// scale: the 0 baseline sits on the same row and the same percentage maps to
+/// the same height in every card (per-card scaling made the axes drift).
+fn shared_vram_y_max(app: &App) -> f64 {
+    let dmax = app
+        .gpu_vram_hist
+        .iter()
+        .flat_map(|h| h.iter().copied())
+        .fold(0.0f64, f64::max);
+    if dmax <= 0.0 {
+        10.0
+    } else {
+        ((dmax * 1.15 / 10.0).ceil() * 10.0).clamp(10.0, 100.0)
+    }
 }
 
 fn render_curve(
@@ -714,6 +734,7 @@ fn render_curve(
     data: &[f64],
     color: Color,
     th: &Theme,
+    y_max: f64,
 ) {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -733,24 +754,19 @@ fn render_curve(
         .style(Style::default().fg(color))
         .data(&points)];
     let xmax = (points.len().saturating_sub(1)).max(1) as f64;
-    // auto-scale the Y axis to the data so small changes are visible
-    // (a fixed 0-100 axis made e.g. 39% -> 42% invisible in a 3-row chart)
-    let dmax = data.iter().cloned().fold(0.0f64, f64::max);
-    let ymax = if dmax <= 0.0 {
-        10.0
-    } else {
-        ((dmax * 1.15 / 10.0).ceil() * 10.0).clamp(10.0, 100.0)
-    };
+    // Y axis uses the caller-provided SHARED max (same for every card) so all
+    // charts line up: identical label width -> identical plot area, and the
+    // same value maps to the same row in every card.
     let chart = Chart::new(datasets)
         .block(block)
         .x_axis(Axis::default().bounds([0.0, xmax]))
         .y_axis(
             Axis::default()
-                .bounds([0.0, ymax])
+                .bounds([0.0, y_max])
                 .style(Style::default().fg(th.dim))
                 .labels(vec![
-                    Line::from("0"),
-                    Line::from(format!("{ymax:.0}")),
+                    Line::from(format!("{:>3.0}", 0.0)),
+                    Line::from(format!("{y_max:>3.0}")),
                 ]),
         );
     f.render_widget(chart, area);
