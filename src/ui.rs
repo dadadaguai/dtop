@@ -34,30 +34,35 @@ pub fn draw(f: &mut Frame, app: &App) {
     let warn_h: u16 = if app.warnings.is_empty() { 0 } else { 1 };
     let n_cards = app.gpu.gpus.len();
 
-    // CPU panel: 8 rows is enough (total/load + core grid); DCU panel: 6 rows in
-    // summary, a scrollable grid in detail. Everything else goes to processes.
+    // CPU panel: 8 rows is enough; DCU panel: 6 rows in summary, a tall
+    // scrollable card grid in detail so the VRAM curve has room to breathe.
     let want_cpu: u16 = 8;
     let want_gpu: u16 = match app.view {
         View::Summary => 6,
         View::Detail => {
             let cols = gpu_detail_cols(n_cards.max(1), area.width) as u16;
             let rows = ((n_cards.max(1) as u16) + cols - 1) / cols;
-            (rows * 9 + 2).max(6)
+            (rows * 12 + 2).max(10) // 12 per card: stats(2) + chart(~8) + borders
         }
     };
     let gpu_cap: u16 = match app.view {
         View::Summary => 6,
-        View::Detail => 20,
+        View::Detail => 28,
     };
     let proc_target: u16 = (app.max_procs as u16 + 3).max(6);
+    let proc_min: u16 = 10;
 
     let fixed = 2 + warn_h; // header + hints + warnings
     let avail = area.height.saturating_sub(fixed).max(6);
     let cpu_h = want_cpu.min(avail.saturating_sub(6)).max(6.min(avail));
     let remain = avail.saturating_sub(cpu_h);
-    // processes first (they were the ones being squeezed), DCU takes the rest
-    // up to its cap, and whatever the cap frees goes back to processes
-    let proc_h = proc_target.min(remain.saturating_sub(want_gpu.min(6)));
+    // DCU first (that is where the curves are), processes keep a floor of
+    // proc_min rows, then leftover space is handed back to the process list
+    let gpu_h = want_gpu
+        .min(remain.saturating_sub(proc_min))
+        .max(6.min(remain))
+        .min(gpu_cap);
+    let proc_h = proc_target.min(remain.saturating_sub(gpu_h));
     let gpu_h = remain.saturating_sub(proc_h).min(gpu_cap);
     let proc_h = remain.saturating_sub(gpu_h);
 
@@ -664,14 +669,8 @@ fn draw_gpu_card(
     }
 
     // Keep room for the VRAM curve; UTIL is dropped and VRAM leads line 1 so its
-    // usage rate is never clipped.
-    let stat_lines: Vec<Line<'static>> = if inner.height >= 9 && !extras.is_empty() {
-        vec![
-            Line::from(cat(&[&sp_vram, &sp_temp, &sp_pwr])),
-            Line::from(cat(&[&sp_sclk, &sp_mclk])),
-            Line::from(extras.clone()),
-        ]
-    } else if inner.height >= 6 {
+    // usage rate is never clipped. At most two stat rows: the rest is chart.
+    let stat_lines: Vec<Line<'static>> = if inner.height >= 6 {
         let line2 = if extras.is_empty() {
             cat(&[&sp_sclk, &sp_mclk])
         } else {
