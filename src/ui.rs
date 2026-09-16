@@ -34,33 +34,32 @@ pub fn draw(f: &mut Frame, app: &App) {
     let warn_h: u16 = if app.warnings.is_empty() { 0 } else { 1 };
     let n_cards = app.gpu.gpus.len();
 
-    // Height the DCU panel would like: enough for all cards (summary) or for
-    // every card to keep a 2-line stat block + braille charts (detail).
+    // CPU panel: 8 rows is enough (total/load + core grid); DCU panel: 6 rows in
+    // summary, a scrollable grid in detail. Everything else goes to processes.
+    let want_cpu: u16 = 8;
     let want_gpu: u16 = match app.view {
-        View::Summary => (n_cards as u16 + 3).max(6), // borders + header + rows
+        View::Summary => 6,
         View::Detail => {
             let cols = gpu_detail_cols(n_cards.max(1), area.width) as u16;
             let rows = ((n_cards.max(1) as u16) + cols - 1) / cols;
-            (rows * 10 + 2).max(6) // 10 = borders(2)+stats(2)+charts(6)
+            (rows * 9 + 2).max(6)
         }
     };
-    let want_cpu: u16 = 14;
-    let want_procs: u16 = (app.max_procs as u16 + 3).max(5);
+    let gpu_cap: u16 = match app.view {
+        View::Summary => 6,
+        View::Detail => 20,
+    };
+    let proc_target: u16 = (app.max_procs as u16 + 3).max(6);
 
     let fixed = 2 + warn_h; // header + hints + warnings
     let avail = area.height.saturating_sub(fixed).max(6);
-    // priority: DCU gets what it wants; CPU/MEM shrinks (min 9) to make room;
-    // processes keep at least 5 rows, leftover space goes to the DCU panel.
-    let cpu_h = avail
-        .saturating_sub(want_gpu + 5)
-        .max(9.min(avail))
-        .min(want_cpu.min(avail));
+    let cpu_h = want_cpu.min(avail.saturating_sub(6)).max(6.min(avail));
     let remain = avail.saturating_sub(cpu_h);
-    let gpu_h0 = want_gpu
-        .min(remain.saturating_sub(5))
-        .max(6.min(remain));
-    let proc_h = remain.saturating_sub(gpu_h0).min(want_procs);
-    let gpu_h = remain.saturating_sub(proc_h);
+    // processes first (they were the ones being squeezed), DCU takes the rest
+    // up to its cap, and whatever the cap frees goes back to processes
+    let proc_h = proc_target.min(remain.saturating_sub(want_gpu.min(6)));
+    let gpu_h = remain.saturating_sub(proc_h).min(gpu_cap);
+    let proc_h = remain.saturating_sub(gpu_h);
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -206,34 +205,31 @@ fn draw_cpu(f: &mut Frame, area: Rect, app: &App, th: &Theme) {
         .constraints([Constraint::Length(17), Constraint::Min(20)])
         .split(inner);
 
-    // left: total + sparkline + loadavg
+    // left: total + loadavg + sparkline (compact: 3 text rows)
     let hist: Vec<u64> = app.cpu_hist.iter().map(|v| *v as u64).collect();
     let total_color = util_color(app.cpu.total, th);
     let left = Paragraph::new(Text::from(vec![
-        Line::from(Span::styled("TOTAL", Style::default().fg(th.dim))),
-        Line::from(Span::styled(
-            format!("{:5.1}%", app.cpu.total),
-            Style::default()
-                .fg(total_color)
-                .add_modifier(Modifier::BOLD),
-        )),
-        Line::from(""),
+        Line::from(vec![
+            Span::styled("TOTAL ", Style::default().fg(th.dim)),
+            Span::styled(
+                format!("{:.1}%", app.cpu.total),
+                Style::default()
+                    .fg(total_color)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
         Line::from(Span::styled(
             format!("load {:.2} {:.2}", app.cpu_col.load[0], app.cpu_col.load[1]),
             Style::default().fg(th.dim),
         )),
         Line::from(Span::styled(
-            format!("15m  {:.2}", app.cpu_col.load[2]),
-            Style::default().fg(th.dim),
-        )),
-        Line::from(Span::styled(
-            format!("{}T", app.cpu_col.nproc),
+            format!("15m  {:.2}  {}T", app.cpu_col.load[2], app.cpu_col.nproc),
             Style::default().fg(th.dim),
         )),
     ]));
     let left_split = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(6), Constraint::Min(3)])
+        .constraints([Constraint::Length(3), Constraint::Min(1)])
         .split(cols[0]);
     f.render_widget(left, left_split[0]);
     f.render_widget(
@@ -361,7 +357,6 @@ fn draw_mem(f: &mut Frame, area: Rect, app: &App, th: &Theme) {
                 Style::default().fg(th.dim),
             ),
         ]),
-        Line::from(""),
         Line::from(vec![
             Span::styled("SWAP  ", Style::default().fg(th.dim)),
             Span::styled(
@@ -381,17 +376,15 @@ fn draw_mem(f: &mut Frame, area: Rect, app: &App, th: &Theme) {
             w,
             th,
         ),
-        Line::from(""),
+        // HBM is text only (the DCU panel already shows the per-card detail)
         if snap.gpus.is_empty() {
-            Line::from(Span::styled(
-                "HBM   N/A (no DCU)",
-                Style::default().fg(th.dim),
-            ))
+            Line::from(Span::styled("HBM   N/A (no DCU)", Style::default().fg(th.dim)))
         } else {
             Line::from(vec![
+                Span::styled("HBM   ", Style::default().fg(th.dim)),
                 Span::styled(
-                    format!("HBM   {:.1}G", hbm_used),
-                    Style::default().fg(th.dim),
+                    format!("{:.1}G", hbm_used),
+                    Style::default().fg(th.cyan),
                 ),
                 Span::styled(
                     format!(" / {:.0}G ({} cards)", hbm_total, snap.gpus.len()),
@@ -399,18 +392,6 @@ fn draw_mem(f: &mut Frame, area: Rect, app: &App, th: &Theme) {
                 ),
             ])
         },
-        seg_bar(
-            &[(
-                if hbm_total > 0.0 {
-                    hbm_used / hbm_total * 100.0
-                } else {
-                    0.0
-                },
-                th.cyan,
-            )],
-            w,
-            th,
-        ),
     ];
     while lines.len() < inner.height as usize {
         lines.push(Line::from(""));
@@ -679,13 +660,13 @@ fn draw_gpu_card(
 
     // Always keep room for the braille charts (they are the point of this
     // view). Only drop to a text-only card when there is genuinely no space.
-    let stat_lines: Vec<Line<'static>> = if inner.height >= 10 && !extras.is_empty() {
+    let stat_lines: Vec<Line<'static>> = if inner.height >= 9 && !extras.is_empty() {
         vec![
             Line::from(cat(&[&sp_util, &sp_temp, &sp_pwr])),
             Line::from(cat(&[&sp_hbm, &sp_sclk, &sp_mclk])),
             Line::from(extras.clone()),
         ]
-    } else if inner.height >= 8 {
+    } else if inner.height >= 7 {
         let line2 = if extras.is_empty() {
             cat(&[&sp_hbm, &sp_sclk, &sp_mclk])
         } else {
@@ -716,24 +697,13 @@ fn draw_gpu_card(
         .split(inner);
     f.render_widget(Paragraph::new(stat_lines), split[0]);
 
-    let charts = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)])
-        .split(split[1]);
-
-    let util_data: Vec<f64> = app
-        .gpu_util_hist
-        .get(idx)
-        .map(|h| h.iter().copied().collect())
-        .unwrap_or_default();
+    // a single full-width VRAM(HBM%) curve is enough; UTIL stays as text
     let vram_data: Vec<f64> = app
         .gpu_vram_hist
         .get(idx)
         .map(|h| h.iter().copied().collect())
         .unwrap_or_default();
-
-    render_curve(f, charts[0], "UTIL", &util_data, th.cyan, th);
-    render_curve(f, charts[1], "HBM%", &vram_data, th.orange, th);
+    render_curve(f, split[1], "HBM%", &vram_data, th.orange, th);
 }
 
 fn render_curve(
