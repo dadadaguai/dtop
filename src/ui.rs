@@ -502,11 +502,18 @@ fn draw_gpu_card(
     idx: usize,
 ) {
     let g = &snap.gpus[idx];
+    let numa_s = app
+        .topology
+        .numa_node
+        .get(g.index)
+        .and_then(|n| *n)
+        .map(|n| format!(" · N{n}"))
+        .unwrap_or_default();
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(th.border))
         .title(Span::styled(
-            format!(" DCU{} {} ", g.index, truncate(&g.name, 18)),
+            format!(" DCU{} {}{} ", g.index, truncate(&g.name, 18), numa_s),
             Style::default()
                 .fg(th.title)
                 .add_modifier(Modifier::BOLD),
@@ -695,7 +702,7 @@ fn render_curve(
 fn draw_gpu_summary(
     f: &mut Frame,
     area: Rect,
-    _app: &App,
+    app: &App,
     th: &Theme,
     snap: &GpuSnapshot,
 ) {
@@ -703,6 +710,7 @@ fn draw_gpu_summary(
     // add DEC/ENC + FAN columns only when the smi backend reports them
     let has_decenc = snap.gpus.iter().any(|g| g.dec_pct.is_some() || g.enc_pct.is_some());
     let has_fan = snap.gpus.iter().any(|g| g.fan_pct.is_some() || g.fan_rpm.is_some());
+    let has_numa = app.topology.numa_node.iter().any(|n| n.is_some());
 
     let rows: Vec<Row> = snap
         .gpus
@@ -752,6 +760,16 @@ fn draw_gpu_summary(
                     .unwrap_or_else(|| "-".into());
                 cells.push(cell(fan, th.dim));
             }
+            if has_numa {
+                let numa = app
+                    .topology
+                    .numa_node
+                    .get(g.index)
+                    .and_then(|n| *n)
+                    .map(|n| format!("N{n}"))
+                    .unwrap_or_else(|| "-".into());
+                cells.push(cell(numa, th.green));
+            }
             Row::new(cells)
         })
         .collect();
@@ -762,6 +780,9 @@ fn draw_gpu_summary(
     }
     if has_fan {
         headers.push("FAN");
+    }
+    if has_numa {
+        headers.push("NUMA");
     }
     let header = Row::new(
         headers
@@ -785,6 +806,9 @@ fn draw_gpu_summary(
     }
     if has_fan {
         widths.push(Constraint::Length(7));
+    }
+    if has_numa {
+        widths.push(Constraint::Length(5));
     }
 
     let table = Table::new(rows, widths).header(header);

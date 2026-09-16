@@ -65,15 +65,18 @@ run default          # 无参数默认输出（含 Dec%/Enc%/Perf/Mode 列）
 # 风扇转速 / 性能状态 / 降频 / PCIe 吞吐 / 拓扑
 run showfan          --showfan
 run showperflevel    --showperflevel
-run showpcie         --showpcie
+run showpciebw       --showpciebw
+run showreplaycount  --showreplaycount
 run showtopo         --showtopo
 run showtopotype     --showtopotype
 run showtopoweight   --showtopoweight
 run showtoponuma     --showtoponuma
 run showmaxpower     --showmaxpower
-run showthrottle     --showthrottle
-run showrealtimeactivity --showrealtimeactivity
 run showvoltage      --showvoltage
+# 每进程 GPU 相关
+run showpidhcus      --showpidhcus
+run showcontainermem --showcontainermem
+run showallinfo      --showallinfo
 # 默认表格里已经含 Dec%/Enc%，这里再单独探一次编解码相关开关
 run showmemuse_decenc --showmemuse --showuse
 
@@ -81,9 +84,9 @@ run showmemuse_decenc --showmemuse --showuse
 timeout 10 "$SMI" --help >"$DIR/smi-help.txt" 2>&1
 # 每个 flag 是否被接受（快速探测，只看退出码与是否有 stderr 报错）
 : >"$DIR/flag-support.txt"
-for flag in --showfan --showperflevel --showpcie --showtopo --showtopotype \
-            --showtopoweight --showtoponuma --showmaxpower --showthrottle \
-            --showrealtimeactivity --showvoltage; do
+for flag in --showfan --showperflevel --showpciebw --showreplaycount --showtopo \
+            --showtopotype --showtopoweight --showtoponuma --showmaxpower \
+            --showvoltage --showpidhcus --showcontainermem --showallinfo; do
     if timeout 8 "$SMI" "$flag" >/dev/null 2>"$DIR/_flag.err"; then
         echo "$flag OK" >>"$DIR/flag-support.txt"
     else
@@ -94,7 +97,10 @@ rm -f "$DIR/_flag.err"
 
 # ── 进程归属与每进程 GPU 占用所需的本机信息 ───────────────────────
 # 取几个占用 DCU 的进程，采集 cgroup（容器/Pod 归属）与 fdinfo（引擎时间）
+# 注意: /proc/<pid>/fdinfo 只有进程属主或 root 可读；若进程属 root，
+#      请用 sudo 运行本脚本，否则 fdinfo 会是 Permission denied。
 {
+    echo "note: fdinfo requires process owner or root; rerun with sudo if denied"
     mapfile -t PIDS < <(timeout 10 "$SMI" --showpids 2>/dev/null | grep -oE 'PID: [0-9]+' | awk '{print $2}')
     echo "pids from showpids: ${PIDS[*]:-none}"
     for pid in "${PIDS[@]:0:5}"; do

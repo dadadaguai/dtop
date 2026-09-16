@@ -1,6 +1,6 @@
 use crate::cli::Cli;
 use crate::collectors::cpu::{CpuCollector, CpuSample};
-use crate::collectors::gpu::{detect, GpuBackend, GpuSample, GpuSnapshot};
+use crate::collectors::gpu::{detect, GpuBackend, GpuSample, GpuSnapshot, GpuTopology};
 use crate::collectors::mem::{self, MemStats};
 use crate::collectors::proc::{ProcCollector, ProcInfo};
 use crate::record::{RecordEntry, Recorder};
@@ -50,6 +50,8 @@ pub struct App {
     pub gpu_state: Arc<Mutex<GpuSnapshot>>,
     /// snapshot cached once per tick so the UI does not lock+clone per frame
     pub gpu: GpuSnapshot,
+    /// static topology info (NUMA affinity, link matrix), fetched once
+    pub topology: GpuTopology,
     pub gpu_util_hist: Vec<VecDeque<f64>>,
     pub gpu_vram_hist: Vec<VecDeque<f64>>,
 
@@ -73,6 +75,8 @@ impl App {
     pub fn new(cli: &Cli) -> anyhow::Result<Self> {
         let backend: Box<dyn GpuBackend> = detect(&cli.backend);
         let backend_name = backend.name().to_string();
+        // static topology (NUMA affinity / link matrix): query once up front
+        let topology = backend.topology().unwrap_or_default();
         let shared = Arc::new(Mutex::new(GpuSnapshot {
             backend: backend_name,
             ..Default::default()
@@ -170,6 +174,7 @@ impl App {
             max_procs: cli.procs,
             gpu_state: shared,
             gpu: GpuSnapshot::default(),
+            topology,
             gpu_util_hist: vec![],
             gpu_vram_hist: vec![],
             interval: cli.interval.clamp(0.2, 30.0),

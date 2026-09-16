@@ -143,6 +143,24 @@ impl GpuBackend for SmiBackend {
         merge_extras(&mut snap.gpus, extras);
         Ok(snap)
     }
+
+    /// One-shot topology query: NUMA affinity per card + link-type matrix.
+    fn topology(&self) -> Option<super::GpuTopology> {
+        let numa_out = self.run(&["--showtoponuma"], false).ok()?;
+        let numa_node = parse_numa(&numa_out);
+        let link_type = self
+            .run(&["--showtopotype"], false)
+            .ok()
+            .map(|o| parse_link_matrix(&o))
+            .unwrap_or_default();
+        if numa_node.is_empty() && link_type.is_empty() {
+            return None;
+        }
+        Some(super::GpuTopology {
+            numa_node,
+            link_type,
+        })
+    }
 }
 
 fn run_cmd_timeout(cmd: &str, args: &[&str], timeout: Duration) -> Result<String> {
@@ -700,6 +718,54 @@ fn parse_bus_map(out: &str) -> HashMap<String, usize> {
     m
 }
 
+/// Parse `--showtoponuma` output like
+/// `HCU[0]\t\t: (Topology) Numa Node 0` into a per-card NUMA node list.
+fn parse_numa(out: &str) -> Vec<Option<u32>> {
+    let mut v: Vec<Option<u32>> = Vec::new();
+    for line in out.lines() {
+        if let Some((idx, start)) = parse_card_idx(line) {
+            let seg = &line[start..];
+            if seg.to_lowercase().contains("numa node") {
+                if let Some(f) = last_f64(seg) {
+                    while v.len() <= idx {
+                        v.push(None);
+                    }
+                    v[idx] = Some(f as u32);
+                }
+            }
+        }
+    }
+    v
+}
+
+/// Parse `--showtopotype` "Link Type between HCUs" matrix into rows of link
+/// type names (link_type[i][j]).
+fn parse_link_matrix(out: &str) -> Vec<Vec<String>> {
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    for line in out.lines() {
+        let t = line.trim();
+        if t.is_empty() || t.chars().all(|c| c == '=' || c == '-') {
+            continue;
+        }
+        if let Some((idx, start)) = parse_card_idx(t) {
+            let rest = t[start..].trim();
+            if rest.is_empty() {
+                continue;
+            }
+            let vals: Vec<String> = rest.split_whitespace().map(|s| s.to_string()).collect();
+            // skip the column header row (its cells are "HCU[n]" tokens)
+            if vals.iter().any(|v| v.starts_with("HCU[")) {
+                continue;
+            }
+            while rows.len() <= idx {
+                rows.push(Vec::new());
+            }
+            rows[idx] = vals;
+        }
+    }
+    rows
+}
+
 /// Parse the concise table produced by bare `hy-smi`:
 ///
 /// HCU   Temp   AvgPwr   Perf   PwrCap   VRAM%   HCU%   Dec%   Enc%   Mode
@@ -1044,6 +1110,25 @@ HCU     Temp     AvgPwr     Perf     PwrCap     VRAM%      HCU%      Dec%      E
         // a real bandwidth key is still accepted
         apply_kv(&mut g, "PCIe Tx (MB/s)", "1536");
         assert_eq!(g.pcie_tx_mbps, Some(1536.0));
+    }
+
+    #[test]
+    fn test_parse_numa_real_sample() {
+        let out = "HCU[0]\t\t: (Topology) Numa Node 0\nHCU[0]\t\t: (Topology) Numa Affinity 0\nHCU[1]\t\t: (Topology) Numa Node 3\nHCU[1]\t\t: (Topology) Numa Affinity 3\n";
+        let v = parse_numa(out);
+        assert_eq!(v.len(), 2);
+        assert_eq!(v[0], Some(0));
+        assert_eq!(v[1], Some(3));
+    }
+
+    #[test]
+    fn test_parse_link_matrix_real_sample() {
+        let out = "\nLink Type between HCUs\n          HCU[0]    HCU[1]    HCU[2]    \nHCU[0]    None      HSW       HSW       \nHCU[1]    HSW       None      HSW       \nHCU[2]    HSW       HSW       None      \n";
+        let m = parse_link_matrix(out);
+        assert_eq!(m.len(), 3);
+        assert_eq!(m[0], vec!["None", "HSW", "HSW"]);
+        assert_eq!(m[1][0], "HSW");
+        assert_eq!(m[2][2], "None");
     }
 
     #[test]

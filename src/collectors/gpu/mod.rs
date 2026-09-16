@@ -57,9 +57,22 @@ pub struct GpuSnapshot {
     pub error: Option<String>,
 }
 
+/// Static per-node topology info (fetched once, not per tick).
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct GpuTopology {
+    /// NUMA node each card is attached to, indexed by card
+    pub numa_node: Vec<Option<u32>>,
+    /// link type matrix (link_type[i][j], e.g. "HSW"/"None"), optional
+    pub link_type: Vec<Vec<String>>,
+}
+
 pub trait GpuBackend: Send + Sync {
     fn name(&self) -> &str;
     fn collect(&self) -> Result<GpuSnapshot>;
+    /// Optional one-shot topology query (default: unsupported)
+    fn topology(&self) -> Option<GpuTopology> {
+        None
+    }
 }
 
 fn which(cmd: &str) -> bool {
