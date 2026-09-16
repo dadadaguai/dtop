@@ -1,4 +1,4 @@
-use crate::app::{App, View};
+use crate::app::{App, Focus, View};
 use crate::collectors::gpu::GpuSnapshot;
 use crate::collectors::mem::fmt_kb;
 use crate::theme::{temp_color, themes, util_color, Theme};
@@ -75,9 +75,11 @@ pub fn draw(f: &mut Frame, app: &App) {
         .split(area);
 
     draw_header(f, chunks[0], app, th);
+    // give the CPU panel as much width as possible: memory only needs ~26-46 cols
+    let mem_w = (area.width / 4).clamp(26, 46);
     let top = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Ratio(3, 5), Constraint::Ratio(2, 5)])
+        .constraints([Constraint::Min(30), Constraint::Length(mem_w)])
         .split(chunks[1]);
     draw_cpu(f, top[0], app, th);
     draw_mem(f, top[1], app, th);
@@ -154,11 +156,48 @@ fn bar_spans(pct: f64, width: usize, color: Color, th: &Theme) -> Vec<Span<'stat
 }
 
 fn draw_cpu(f: &mut Frame, area: Rect, app: &App, th: &Theme) {
+    let cores = &app.cpu.per_core;
+    let n = cores.len();
+
+    // core grid geometry (needed for the title before the block is built)
+    let inner_w = area.width.saturating_sub(2);
+    let core_area_w = inner_w.saturating_sub(17) as usize;
+    let ncols = (core_area_w / 22).clamp(1, 8);
+    let rows_vis = area.height.saturating_sub(2).max(1) as usize;
+    let cells = ncols * rows_vis;
+    let max_offset = n.saturating_sub(cells);
+    app.cpu_scroll_max.set(max_offset);
+    let offset = app.cpu_scroll.min(max_offset);
+
+    let focused = app.focus == Focus::Cpu;
+    let range = if max_offset > 0 {
+        format!(
+            "· {}-{}/{} ↑↓ ",
+            offset + 1,
+            (offset + cells).min(n),
+            n
+        )
+    } else {
+        String::new()
+    };
     let title = Span::styled(
-        format!(" CPU  {} ", truncate(&app.cpu_col.model, 28)),
+        format!(
+            " {}CPU  {}{} ",
+            if focused { "◉ " } else { "" },
+            truncate(&app.cpu_col.model, 24),
+            if range.is_empty() {
+                String::new()
+            } else {
+                format!(" {range}")
+            }
+        ),
         Style::default(),
     );
-    let block = block_title(title, th);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(if focused { th.title } else { th.border }))
+        .title(title)
+        .title_style(Style::default().fg(th.title).add_modifier(Modifier::BOLD));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -206,17 +245,10 @@ fn draw_cpu(f: &mut Frame, area: Rect, app: &App, th: &Theme) {
         left_split[1],
     );
 
-    // right: per-core bars, adaptive grouping for high core counts
-    let cores = &app.cpu.per_core;
-    let n = cores.len();
-    let avail_h = cols[1].height.max(1) as usize;
-    let ncols = if n <= 32 { 2 } else if n <= 72 { 3 } else { 4 };
-    let cells = ncols * avail_h;
-    // group adjacent cores when they don't fit individually
-    let group = if n <= cells { 1 } else { (n + cells - 1) / cells };
-    let shown = (n + group - 1) / group;
-    let per_col = (shown + ncols - 1) / ncols;
-
+    // right: individual cores in a scrollable grid (row-major).
+    if n == 0 {
+        return;
+    }
     let mut col_constraints = Vec::new();
     for _ in 0..ncols {
         col_constraints.push(Constraint::Ratio(1, ncols as u32));
@@ -226,36 +258,35 @@ fn draw_cpu(f: &mut Frame, area: Rect, app: &App, th: &Theme) {
         .constraints(col_constraints)
         .split(cols[1]);
 
-    let label_w = if group == 1 { 4 } else { 8 };
-    let bar_w = (core_cols[0].width as usize)
-        .saturating_sub(label_w + 5)
-        .clamp(2, 30);
+    // fixed label ("C127 ") + percentage (" 100%") + 1 trailing gap
+    let col_w_min = (0..ncols)
+        .map(|ci| core_cols[ci].width as usize)
+        .min()
+        .unwrap_or(20);
+    let bar_w = col_w_min.saturating_sub(11).clamp(2, 40);
 
-    for ci in 0..ncols {
-        let mut lines = Vec::new();
-        for r in 0..per_col {
-            let cell_idx = ci * per_col + r;
-            let start = cell_idx * group;
-            if start >= n {
-                break;
+    let mut col_lines: Vec<Vec<Line<'static>>> = vec![Vec::new(); ncols];
+    'outer: for r in 0..rows_vis {
+        for ci in 0..ncols {
+            let idx = offset + r * ncols + ci;
+            if idx >= n {
+                break 'outer;
             }
-            let end = (start + group).min(n);
-            let slice = &cores[start..end];
-            let avg = slice.iter().sum::<f64>() / slice.len() as f64;
-            let label = if group == 1 {
-                format!("C{start:0>2} ")
-            } else {
-                format!("C{}-{} ", start, end - 1)
-            };
-            let mut spans = vec![Span::styled(label, Style::default().fg(th.dim))];
-            spans.extend(bar_spans(avg, bar_w, util_color(avg, th), th));
+            let v = cores[idx];
+            let mut spans = vec![Span::styled(
+                format!("C{idx:<3} "),
+                Style::default().fg(th.dim),
+            )];
+            spans.extend(bar_spans(v, bar_w, util_color(v, th), th));
             spans.push(Span::styled(
-                format!(" {:3.0}%", avg),
+                format!("{:>4.0}% ", v),
                 Style::default().fg(th.text),
             ));
-            lines.push(Line::from(spans));
+            col_lines[ci].push(Line::from(spans));
         }
-        f.render_widget(Paragraph::new(lines), core_cols[ci]);
+    }
+    for ci in 0..ncols {
+        f.render_widget(Paragraph::new(std::mem::take(&mut col_lines[ci])), core_cols[ci]);
     }
 }
 
@@ -402,8 +433,12 @@ fn stat_span(label: &str, value: String, color: Color, th: &Theme) -> Vec<Span<'
 
 fn draw_gpu(f: &mut Frame, area: Rect, app: &App, th: &Theme) {
     let snap = &app.gpu;
+    let focused = app.focus == Focus::Gpu;
     let mut title_spans = vec![
-        Span::styled(" DCU ", Style::default().fg(th.title).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            if focused { " ◉ DCU " } else { " DCU " },
+            Style::default().fg(th.title).add_modifier(Modifier::BOLD),
+        ),
         Span::styled(
             format!(
                 "{} cards · backend:{} · {}s ",
@@ -423,7 +458,7 @@ fn draw_gpu(f: &mut Frame, area: Rect, app: &App, th: &Theme) {
     }
     let mut block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(th.border))
+        .border_style(Style::default().fg(if focused { th.title } else { th.border }))
         .title(Line::from(title_spans));
     if app.view == View::Detail {
         block = block.title(
@@ -497,9 +532,17 @@ fn draw_gpu_detail(
     }
     // cols is computed from the panel (outer) width so it matches the layout
     let rows = (n + cols - 1) / cols;
+    // a card wants >= 6 rows (borders + 1 stat line + charts); if the panel
+    // cannot fit every row, show a scrollable window of rows
+    let vis_rows = ((area.height / 6).max(1) as usize).min(rows);
+    let max_off = rows.saturating_sub(vis_rows);
+    app.gpu_scroll_max.set(max_off);
+    let off = app.gpu_scroll.min(max_off);
+    let vis_rows = vis_rows.min(rows - off);
+
     let mut constraints = Vec::new();
-    for _ in 0..rows {
-        constraints.push(Constraint::Ratio(1, rows as u32));
+    for _ in 0..vis_rows {
+        constraints.push(Constraint::Ratio(1, vis_rows as u32));
     }
     let row_areas = Layout::default()
         .direction(Direction::Vertical)
@@ -507,7 +550,7 @@ fn draw_gpu_detail(
         .split(area);
 
     for (ri, row_area) in row_areas.iter().enumerate() {
-        let start = ri * cols;
+        let start = (off + ri) * cols;
         let count = n.saturating_sub(start).min(cols);
         if count == 0 {
             break;
@@ -744,9 +787,17 @@ fn draw_gpu_summary(
     let has_fan = snap.gpus.iter().any(|g| g.fan_pct.is_some() || g.fan_rpm.is_some());
     let has_numa = app.topology.numa_node.iter().any(|n| n.is_some());
 
+    // scrollable window: header takes 1 row
+    let vis = (area.height.saturating_sub(1) as usize).max(1);
+    let max_off = snap.gpus.len().saturating_sub(vis);
+    app.gpu_scroll_max.set(max_off);
+    let off = app.gpu_scroll.min(max_off);
+
     let rows: Vec<Row> = snap
         .gpus
         .iter()
+        .skip(off)
+        .take(vis)
         .map(|g| {
             let util = g.util.unwrap_or(0.0);
             let temp = g.temp_c.unwrap_or(0.0);
@@ -853,18 +904,21 @@ fn cell(s: impl Into<String>, color: Color) -> TCell<'static> {
 
 fn draw_procs(f: &mut Frame, area: Rect, app: &App, th: &Theme) {
     let snap = &app.gpu;
-    let block = block_title(
-        Span::styled(
+    let focused = app.focus == Focus::Procs;
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(if focused { th.title } else { th.border }))
+        .title(Span::styled(
             format!(
-                " PROCESSES  {} total · {} on DCU · sort:{} ",
+                " {}PROCESSES  {} total · {} on DCU · sort:{} ",
+                if focused { "◉ " } else { "" },
                 app.total_procs,
                 snap.procs.len(),
                 if app.sort_by_mem { "MEM" } else { "CPU" }
             ),
             Style::default(),
-        ),
-        th,
-    );
+        ))
+        .title_style(Style::default().fg(th.title).add_modifier(Modifier::BOLD));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -982,31 +1036,53 @@ fn draw_warnings(f: &mut Frame, area: Rect, app: &App, th: &Theme) {
 fn draw_hints(f: &mut Frame, area: Rect, app: &App, th: &Theme) {
     let status = app.status_text().map(|s| format!(" [{s}]")).unwrap_or_default();
     let record = if app.recorder.is_some() { " rec:●" } else { "" };
+    let key = |_: &'static str| Style::default().fg(th.title).add_modifier(Modifier::BOLD);
+    let dim = || Style::default().fg(th.dim);
+    // highlight the active focus target
+    let fstyle = |focus: Focus| {
+        if app.focus == focus {
+            Style::default().fg(th.green).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(th.title).add_modifier(Modifier::BOLD)
+        }
+    };
     let line = Line::from(vec![
+        Span::styled(" q", key("q")),
+        Span::styled(" quit  ", dim()),
+        Span::styled("h", key("h")),
+        Span::styled(" help  ", dim()),
+        Span::styled("Tab", key("Tab")),
+        Span::styled(" view  ", dim()),
+        Span::styled("t", key("t")),
+        Span::styled(" theme  ", dim()),
+        Span::styled("c", fstyle(Focus::Cpu)),
+        Span::styled("/", dim()),
+        Span::styled("g", fstyle(Focus::Gpu)),
+        Span::styled("/", dim()),
+        Span::styled("p", fstyle(Focus::Procs)),
         Span::styled(
-            " q",
-            Style::default().fg(th.title).add_modifier(Modifier::BOLD),
+            format!(" focus({}) scroll  ", focus_name(app.focus)),
+            dim(),
         ),
-        Span::styled(" quit  ", Style::default().fg(th.dim)),
-        Span::styled("h", Style::default().fg(th.title).add_modifier(Modifier::BOLD)),
-        Span::styled(" help  ", Style::default().fg(th.dim)),
-        Span::styled("Tab", Style::default().fg(th.title).add_modifier(Modifier::BOLD)),
-        Span::styled(" view  ", Style::default().fg(th.dim)),
-        Span::styled("t", Style::default().fg(th.title).add_modifier(Modifier::BOLD)),
-        Span::styled(" theme  ", Style::default().fg(th.dim)),
-        Span::styled("↑↓", Style::default().fg(th.title).add_modifier(Modifier::BOLD)),
-        Span::styled(" select  ", Style::default().fg(th.dim)),
-        Span::styled("k", Style::default().fg(th.title).add_modifier(Modifier::BOLD)),
-        Span::styled(" kill  ", Style::default().fg(th.dim)),
-        Span::styled("s", Style::default().fg(th.title).add_modifier(Modifier::BOLD)),
-        Span::styled(" sort  ", Style::default().fg(th.dim)),
-        Span::styled("+/-", Style::default().fg(th.title).add_modifier(Modifier::BOLD)),
+        Span::styled("k", key("k")),
+        Span::styled(" kill  ", dim()),
+        Span::styled("s", key("s")),
+        Span::styled(" sort  ", dim()),
+        Span::styled("+/-", key("+/-")),
         Span::styled(
             format!(" interval{record}{status}"),
-            Style::default().fg(th.dim),
+            dim(),
         ),
     ]);
     f.render_widget(Paragraph::new(line), area);
+}
+
+fn focus_name(f: Focus) -> &'static str {
+    match f {
+        Focus::Cpu => "CPU",
+        Focus::Gpu => "DCU",
+        Focus::Procs => "proc",
+    }
 }
 
 fn centered_rect(width: u16, height: u16, r: Rect) -> Rect {
@@ -1023,7 +1099,10 @@ fn draw_help(f: &mut Frame, area: Rect, th: &Theme) {
         ("h / F1", "toggle this help"),
         ("Tab / v", "switch detail / summary view"),
         ("t", "cycle theme (dark / nord / light)"),
-        ("↑ ↓ / PgUp PgDn", "select process"),
+        ("c", "focus CPU panel"),
+        ("g", "focus DCU panel"),
+        ("p", "focus process list"),
+        ("↑ ↓ / PgUp PgDn", "scroll the focused panel"),
         ("k", "send SIGTERM to selected process"),
         ("s", "toggle sort by CPU% / MEM%"),
         ("+ / -", "increase / decrease refresh interval"),

@@ -114,11 +114,11 @@ fn run_loop(term: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<io::
                 }
                 Event::Mouse(m) => match m.kind {
                     MouseEventKind::ScrollUp => {
-                        app.scroll(-1);
+                        app.scroll_focused(-1, false);
                         dirty = true;
                     }
                     MouseEventKind::ScrollDown => {
-                        app.scroll(1);
+                        app.scroll_focused(1, false);
                         dirty = true;
                     }
                     _ => {}

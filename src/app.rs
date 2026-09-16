@@ -6,6 +6,7 @@ use crate::collectors::proc::{ProcCollector, ProcInfo};
 use crate::record::{RecordEntry, Recorder};
 use crate::theme;
 use crossterm::event::{KeyCode, KeyEvent};
+use std::cell::Cell;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -14,6 +15,14 @@ use std::time::{Duration, Instant};
 pub enum View {
     Detail,
     Summary,
+}
+
+/// Which panel the arrow keys / mouse wheel currently drive.
+#[derive(PartialEq, Clone, Copy, Debug)]
+pub enum Focus {
+    Procs,
+    Cpu,
+    Gpu,
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -37,6 +46,14 @@ pub struct App {
     pub show_help: bool,
     pub kill_target: Option<ProcInfo>,
     pub status_msg: Option<(String, Instant)>,
+
+    /// which panel the scroll keys drive
+    pub focus: Focus,
+    pub cpu_scroll: usize,
+    pub gpu_scroll: usize,
+    /// maxima written back by the renderer so input can clamp correctly
+    pub cpu_scroll_max: Cell<usize>,
+    pub gpu_scroll_max: Cell<usize>,
 
     pub cpu_col: CpuCollector,
     pub cpu: CpuSample,
@@ -161,6 +178,11 @@ impl App {
             show_help: false,
             kill_target: None,
             status_msg: None,
+            focus: Focus::Procs,
+            cpu_scroll: 0,
+            gpu_scroll: 0,
+            cpu_scroll_max: Cell::new(0),
+            gpu_scroll_max: Cell::new(0),
             cpu_col: CpuCollector::new(),
             cpu: CpuSample {
                 total: 0.0,
@@ -279,6 +301,10 @@ impl App {
         }
 
         self.update_warnings();
+
+        // keep scroll offsets valid after resizes or card/core count changes
+        self.cpu_scroll = self.cpu_scroll.min(self.cpu_scroll_max.get());
+        self.gpu_scroll = self.gpu_scroll.min(self.gpu_scroll_max.get());
     }
 
     /// Derive anomaly warnings from the latest snapshot. Kept intentionally
@@ -360,6 +386,24 @@ impl App {
         self.selected = ((self.selected as i64 + delta).clamp(0, len - 1)) as usize;
     }
 
+    /// Route scroll input to the focused panel.
+    pub fn scroll_focused(&mut self, delta: i64, page: bool) {
+        let step = if page { 10 } else { 1 };
+        match self.focus {
+            Focus::Procs => self.scroll(delta * if page { 5 } else { 1 }),
+            Focus::Cpu => {
+                let max = self.cpu_scroll_max.get() as i64;
+                self.cpu_scroll =
+                    (self.cpu_scroll as i64 + delta * step).clamp(0, max) as usize;
+            }
+            Focus::Gpu => {
+                let max = self.gpu_scroll_max.get() as i64;
+                self.gpu_scroll =
+                    (self.gpu_scroll as i64 + delta * step).clamp(0, max) as usize;
+            }
+        }
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) {
         // kill confirmation popup eats keys first
         if let Some(target) = self.kill_target.clone() {
@@ -407,10 +451,22 @@ impl App {
                 self.theme_idx = (self.theme_idx + 1) % theme::themes().len();
                 self.set_status(format!("theme: {}", theme::themes()[self.theme_idx].name));
             }
-            KeyCode::Up => self.scroll(-1),
-            KeyCode::Down => self.scroll(1),
-            KeyCode::PageUp => self.scroll(-5),
-            KeyCode::PageDown => self.scroll(5),
+            KeyCode::Char('p') => {
+                self.focus = Focus::Procs;
+                self.set_status("focus: processes".into());
+            }
+            KeyCode::Char('c') => {
+                self.focus = Focus::Cpu;
+                self.set_status("focus: CPU  (↑↓ / wheel scrolls cores)".into());
+            }
+            KeyCode::Char('g') => {
+                self.focus = Focus::Gpu;
+                self.set_status("focus: DCU  (↑↓ / wheel scrolls cards)".into());
+            }
+            KeyCode::Up => self.scroll_focused(-1, false),
+            KeyCode::Down => self.scroll_focused(1, false),
+            KeyCode::PageUp => self.scroll_focused(-1, true),
+            KeyCode::PageDown => self.scroll_focused(1, true),
             KeyCode::Char('s') => {
                 self.sort_by_mem = !self.sort_by_mem;
                 self.set_status(format!(
