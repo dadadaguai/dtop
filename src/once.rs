@@ -65,17 +65,22 @@ pub fn run(cli: &Cli, backend: &dyn GpuBackend) -> Result<()> {
             .util
             .map(|u| format!("{u:>3.0}%"))
             .unwrap_or_else(|| "N/A ".into());
+        let vram_s = match (g.vram_used_mb, g.vram_total_mb) {
+            (Some(u), Some(t)) if t > 0.0 => format!(
+                "{:.0}% {:.1}G/{:.0}G",
+                u / t * 100.0,
+                u / 1024.0,
+                t / 1024.0
+            ),
+            (Some(u), Some(t)) => format!("{:.1}G/{:.0}G", u / 1024.0, t / 1024.0),
+            _ => "N/A".into(),
+        };
         println!(
-            "DCU{} {}  util {}  hbm {}/{}  {}°C  {}W  sclk {}MHz",
+            "DCU{} {}  util {}  vram {}  {}°C  {}W  sclk {}MHz",
             g.index,
             g.name,
             util_s,
-            g.vram_used_mb
-                .map(|v| format!("{:.1}G", v / 1024.0))
-                .unwrap_or_else(|| "N/A".into()),
-            g.vram_total_mb
-                .map(|v| format!("{:.0}G", v / 1024.0))
-                .unwrap_or_else(|| "N/A".into()),
+            vram_s,
             g.temp_c.map(|t| format!("{t:.0}")).unwrap_or_else(|| "N/A".into()),
             g.power_w.map(|p| format!("{p:.0}")).unwrap_or_else(|| "N/A".into()),
             g.sclk_mhz
@@ -117,7 +122,7 @@ pub fn run(cli: &Cli, backend: &dyn GpuBackend) -> Result<()> {
         println!();
         println!(
             "{:<8}{:<12}{:>7}{:>7}  {:<8}{:>8}  {}",
-            "PID", "USER", "CPU%", "MEM%", "DCU", "HBM", "COMMAND"
+            "PID", "USER", "CPU%", "MEM%", "DCU", "VRAM", "COMMAND"
         );
         if cli.sort == "mem" {
             for p in procs.iter_mut() {

@@ -114,7 +114,7 @@ impl App {
                     // trace level: full per-card values, useful for remote parser debugging
                     for g in &snap.gpus {
                         log::trace!(
-                            "card{} name={:?} util={:?} hbm={:?}/{:?}MB temp={:?}C pwr={:?}W sclk={:?}",
+                            "card{} name={:?} util={:?} vram={:?}/{:?}MB temp={:?}C pwr={:?}W sclk={:?}",
                             g.index, g.name, g.util, g.vram_used_mb, g.vram_total_mb,
                             g.temp_c, g.power_w, g.sclk_mhz
                         );
@@ -366,7 +366,7 @@ impl App {
                 warnings.push(Warning {
                     level: WarnLevel::Warn,
                     text: format!(
-                        "DCU{} idle {}s but {:.0}% HBM held",
+                        "DCU{} idle {}s but {:.0}% VRAM held",
                         g.index, idle_streak[i], vram_pct
                     ),
                 });

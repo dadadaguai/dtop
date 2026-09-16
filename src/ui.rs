@@ -376,12 +376,12 @@ fn draw_mem(f: &mut Frame, area: Rect, app: &App, th: &Theme) {
             w,
             th,
         ),
-        // HBM is text only (the DCU panel already shows the per-card detail)
+        // VRAM is text only (the DCU panel already shows the per-card detail)
         if snap.gpus.is_empty() {
-            Line::from(Span::styled("HBM   N/A (no DCU)", Style::default().fg(th.dim)))
+            Line::from(Span::styled("VRAM  N/A (no DCU)", Style::default().fg(th.dim)))
         } else {
             Line::from(vec![
-                Span::styled("HBM   ", Style::default().fg(th.dim)),
+                Span::styled("VRAM  ", Style::default().fg(th.dim)),
                 Span::styled(
                     format!("{:.1}G", hbm_used),
                     Style::default().fg(th.cyan),
@@ -593,6 +593,12 @@ fn draw_gpu_card(
     let util_c = g.util.map(|u| util_color(u, th)).unwrap_or(th.dim);
     let temp = g.temp_c.unwrap_or(0.0);
     let vram_s = match (g.vram_used_mb, g.vram_total_mb) {
+        (Some(u), Some(t)) if t > 0.0 => format!(
+            "{:.0}% {:.1}/{:.0}G",
+            u / t * 100.0,
+            u / 1024.0,
+            t / 1024.0
+        ),
         (Some(u), Some(t)) => format!("{:.1}/{:.0}G", u / 1024.0, t / 1024.0),
         _ => "N/A".into(),
     };
@@ -614,7 +620,7 @@ fn draw_gpu_card(
         th.orange,
         th,
     );
-    let sp_hbm = stat_span("HBM", vram_s, th.cyan, th);
+    let sp_hbm = stat_span("VRAM", vram_s, th.cyan, th);
     let sp_sclk = stat_span(
         "SCLK",
         g.sclk_mhz.map(|c| format!("{c}M")).unwrap_or_else(|| "N/A".into()),
@@ -697,13 +703,13 @@ fn draw_gpu_card(
         .split(inner);
     f.render_widget(Paragraph::new(stat_lines), split[0]);
 
-    // a single full-width VRAM(HBM%) curve is enough; UTIL stays as text
+    // a single full-width VRAM usage curve is enough; UTIL stays as text
     let vram_data: Vec<f64> = app
         .gpu_vram_hist
         .get(idx)
         .map(|h| h.iter().copied().collect())
         .unwrap_or_default();
-    render_curve(f, split[1], "HBM%", &vram_data, th.orange, th);
+    render_curve(f, split[1], "VRAM%", &vram_data, th.orange, th);
 }
 
 fn render_curve(
@@ -773,6 +779,12 @@ fn draw_gpu_summary(
             let temp = g.temp_c.unwrap_or(0.0);
             let bar = Line::from(bar_spans(util, bar_w, util_color(util, th), th));
             let vram = match (g.vram_used_mb, g.vram_total_mb) {
+                (Some(u), Some(t)) if t > 0.0 => format!(
+                    "{:.0}% {:.1}/{:.0}G",
+                    u / t * 100.0,
+                    u / 1024.0,
+                    t / 1024.0
+                ),
                 (Some(u), Some(t)) => format!("{:.1}/{:.0}G", u / 1024.0, t / 1024.0),
                 _ => "N/A".into(),
             };
@@ -827,7 +839,7 @@ fn draw_gpu_summary(
         })
         .collect();
 
-    let mut headers = vec!["CARD", "MODEL", "GPU-UTIL", "UTIL", "HBM", "TEMP", "POWER", "SCLK"];
+    let mut headers = vec!["CARD", "MODEL", "GPU-UTIL", "UTIL", "VRAM", "TEMP", "POWER", "SCLK"];
     if has_decenc {
         headers.push("DEC/ENC");
     }
@@ -849,7 +861,7 @@ fn draw_gpu_summary(
         Constraint::Length(18),
         Constraint::Length(bar_w as u16 + 1),
         Constraint::Length(5),
-        Constraint::Length(10),
+        Constraint::Length(13),
         Constraint::Length(5),
         Constraint::Length(6),
         Constraint::Length(6),
@@ -949,7 +961,7 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, th: &Theme) {
         })
         .collect();
 
-    let mut headers = vec!["PID", "USER", "CPU%", "MEM%", "DCU", "HBM"];
+    let mut headers = vec!["PID", "USER", "CPU%", "MEM%", "DCU", "VRAM"];
     if show_pod {
         headers.push("POD");
     }

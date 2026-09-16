@@ -69,7 +69,7 @@ pub struct Cli {
     #[arg(long, default_value_t = 85.0, value_name = "C")]
     pub temp_crit: f64,
 
-    /// seconds a DCU must stay idle while holding HBM before warning
+    /// seconds a DCU must stay idle while holding VRAM before warning
     #[arg(long, default_value_t = 10, value_name = "SECS")]
     pub idle_warn_secs: u64,
 }
