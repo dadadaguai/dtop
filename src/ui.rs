@@ -12,18 +12,62 @@ use ratatui::widgets::{
 };
 use ratatui::Frame;
 
+/// Number of columns for the per-card grid in the detail view.
+fn gpu_detail_cols(n: usize, width: u16) -> usize {
+    if n <= 2 {
+        n.max(1)
+    } else if n <= 4 {
+        2
+    } else if width >= 150 {
+        4
+    } else if width >= 90 {
+        3
+    } else {
+        2
+    }
+}
+
 pub fn draw(f: &mut Frame, app: &App) {
     let th = &themes()[app.theme_idx];
     let area = f.area();
 
-    let proc_h = (app.max_procs as u16 + 3).clamp(5, area.height.saturating_sub(24).max(5));
     let warn_h: u16 = if app.warnings.is_empty() { 0 } else { 1 };
+    let n_cards = app.gpu.gpus.len();
+
+    // Height the DCU panel would like: enough for all cards (summary) or for
+    // every card to keep a 2-line stat block + braille charts (detail).
+    let want_gpu: u16 = match app.view {
+        View::Summary => (n_cards as u16 + 3).max(6), // borders + header + rows
+        View::Detail => {
+            let cols = gpu_detail_cols(n_cards.max(1), area.width) as u16;
+            let rows = ((n_cards.max(1) as u16) + cols - 1) / cols;
+            (rows * 10 + 2).max(6) // 10 = borders(2)+stats(2)+charts(6)
+        }
+    };
+    let want_cpu: u16 = 14;
+    let want_procs: u16 = (app.max_procs as u16 + 3).max(5);
+
+    let fixed = 2 + warn_h; // header + hints + warnings
+    let avail = area.height.saturating_sub(fixed).max(6);
+    // priority: DCU gets what it wants; CPU/MEM shrinks (min 9) to make room;
+    // processes keep at least 5 rows, leftover space goes to the DCU panel.
+    let cpu_h = avail
+        .saturating_sub(want_gpu + 5)
+        .max(9.min(avail))
+        .min(want_cpu.min(avail));
+    let remain = avail.saturating_sub(cpu_h);
+    let gpu_h0 = want_gpu
+        .min(remain.saturating_sub(5))
+        .max(6.min(remain));
+    let proc_h = remain.saturating_sub(gpu_h0).min(want_procs);
+    let gpu_h = remain.saturating_sub(proc_h);
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
-            Constraint::Length(14),
-            Constraint::Min(8),
+            Constraint::Length(cpu_h),
+            Constraint::Length(gpu_h),
             Constraint::Length(proc_h),
             Constraint::Length(warn_h),
             Constraint::Length(1),
@@ -432,7 +476,10 @@ fn draw_gpu(f: &mut Frame, area: Rect, app: &App, th: &Theme) {
 
     match app.view {
         View::Summary => draw_gpu_summary(f, inner, app, th, snap),
-        View::Detail => draw_gpu_detail(f, inner, app, th, snap),
+        View::Detail => {
+            let cols = gpu_detail_cols(snap.gpus.len().max(1), area.width);
+            draw_gpu_detail(f, inner, app, th, snap, cols)
+        }
     }
 }
 
@@ -442,23 +489,13 @@ fn draw_gpu_detail(
     app: &App,
     th: &Theme,
     snap: &GpuSnapshot,
+    cols: usize,
 ) {
     let n = snap.gpus.len();
     if n == 0 {
         return;
     }
-    // adaptive grid: show ALL cards. pick column count from card count + width.
-    let cols = if n <= 2 {
-        n
-    } else if n <= 4 {
-        2
-    } else if area.width >= 150 {
-        4
-    } else if area.width >= 90 {
-        3
-    } else {
-        2
-    };
+    // cols is computed from the panel (outer) width so it matches the layout
     let rows = (n + cols - 1) / cols;
     let mut constraints = Vec::new();
     for _ in 0..rows {
@@ -536,103 +573,98 @@ fn draw_gpu_card(
         _ => "N/A".into(),
     };
 
-    // compact mode: not enough height for charts, show stats only
-    if inner.height < 6 {
-        let mut s = stat_span("UTIL", util_s, util_c, th);
-        s.extend(stat_span(
-            "TEMP",
-            g.temp_c.map(|t| format!("{t:.0}C")).unwrap_or_else(|| "N/A".into()),
-            temp_color(temp, th),
-            th,
-        ));
-        s.extend(stat_span(
-            "PWR",
-            g.power_w.map(|p| format!("{p:.0}W")).unwrap_or_else(|| "N/A".into()),
-            th.orange,
-            th,
-        ));
+    let cat = |groups: &[&Vec<Span<'static>>]| -> Vec<Span<'static>> {
+        groups.iter().flat_map(|g| (*g).iter().cloned()).collect()
+    };
+
+    let sp_util = stat_span("UTIL", util_s, util_c, th);
+    let sp_temp = stat_span(
+        "TEMP",
+        g.temp_c.map(|t| format!("{t:.0}C")).unwrap_or_else(|| "N/A".into()),
+        temp_color(temp, th),
+        th,
+    );
+    let sp_pwr = stat_span(
+        "PWR",
+        g.power_w.map(|p| format!("{p:.0}W")).unwrap_or_else(|| "N/A".into()),
+        th.orange,
+        th,
+    );
+    let sp_hbm = stat_span("HBM", vram_s, th.cyan, th);
+    let sp_sclk = stat_span(
+        "SCLK",
+        g.sclk_mhz.map(|c| format!("{c}M")).unwrap_or_else(|| "N/A".into()),
+        th.text,
+        th,
+    );
+    let sp_mclk = stat_span(
+        "MCLK",
+        g.mclk_mhz.map(|c| format!("{c}M")).unwrap_or_else(|| "N/A".into()),
+        th.dim,
+        th,
+    );
+
+    // extras: video engines / fan / perf / mode
+    let mut extras: Vec<Span<'static>> = Vec::new();
+    if let Some(d) = g.dec_pct {
+        extras.extend(stat_span("DEC", format!("{d:.0}%"), th.cyan, th));
+    }
+    if let Some(e) = g.enc_pct {
+        extras.extend(stat_span("ENC", format!("{e:.0}%"), th.green, th));
+    }
+    if let Some(f) = g.fan_pct {
+        extras.extend(stat_span("FAN", format!("{f:.0}%"), th.dim, th));
+    } else if let Some(r) = g.fan_rpm {
+        extras.extend(stat_span("FAN", format!("{r}rpm"), th.dim, th));
+    }
+    if let Some(p) = &g.perf_level {
+        if p.to_lowercase() != "auto" {
+            extras.extend(stat_span("PERF", p.clone(), th.dim, th));
+        }
+    }
+    if let Some(m) = &g.mode {
+        let ml = m.to_lowercase();
+        if !ml.is_empty() && ml != "normal" {
+            let mc = if ml.contains("power saving") || ml.contains("throttl") || ml.contains("low") {
+                th.red
+            } else {
+                th.yellow
+            };
+            extras.extend(stat_span("MODE", m.clone(), mc, th));
+        }
+    }
+
+    // Always keep room for the braille charts (they are the point of this
+    // view). Only drop to a text-only card when there is genuinely no space.
+    let stat_lines: Vec<Line<'static>> = if inner.height >= 10 && !extras.is_empty() {
+        vec![
+            Line::from(cat(&[&sp_util, &sp_temp, &sp_pwr])),
+            Line::from(cat(&[&sp_hbm, &sp_sclk, &sp_mclk])),
+            Line::from(extras.clone()),
+        ]
+    } else if inner.height >= 8 {
+        let line2 = if extras.is_empty() {
+            cat(&[&sp_hbm, &sp_sclk, &sp_mclk])
+        } else {
+            cat(&[&sp_hbm, &sp_sclk, &extras])
+        };
+        vec![
+            Line::from(cat(&[&sp_util, &sp_temp, &sp_pwr])),
+            Line::from(line2),
+        ]
+    } else if inner.height >= 5 {
+        vec![Line::from(cat(&[&sp_util, &sp_temp, &sp_pwr, &sp_hbm]))]
+    } else {
+        let mut s = cat(&[&sp_util, &sp_temp, &sp_pwr]);
+        if inner.height >= 2 {
+            s.extend(sp_hbm.clone());
+        }
         if inner.height >= 3 {
-            s.extend(stat_span("HBM", vram_s, th.cyan, th));
-            s.extend(stat_span(
-                "SCLK",
-                g.sclk_mhz.map(|c| format!("{c}M")).unwrap_or_else(|| "N/A".into()),
-                th.text,
-                th,
-            ));
+            s.extend(sp_sclk.clone());
         }
         f.render_widget(Paragraph::new(Line::from(s)), inner);
         return;
-    }
-
-    let mut stat_lines = vec![
-        Line::from({
-            let mut s = stat_span("UTIL", util_s, util_c, th);
-            s.extend(stat_span(
-                "TEMP",
-                g.temp_c.map(|t| format!("{t:.0}C")).unwrap_or_else(|| "N/A".into()),
-                temp_color(temp, th),
-                th,
-            ));
-            s.extend(stat_span(
-                "PWR",
-                g.power_w.map(|p| format!("{p:.0}W")).unwrap_or_else(|| "N/A".into()),
-                th.orange,
-                th,
-            ));
-            s
-        }),
-        Line::from({
-            let mut s = stat_span("HBM", vram_s, th.cyan, th);
-            s.extend(stat_span(
-                "SCLK",
-                g.sclk_mhz.map(|c| format!("{c}M")).unwrap_or_else(|| "N/A".into()),
-                th.text,
-                th,
-            ));
-            s.extend(stat_span(
-                "MCLK",
-                g.mclk_mhz.map(|c| format!("{c}M")).unwrap_or_else(|| "N/A".into()),
-                th.dim,
-                th,
-            ));
-            s
-        }),
-    ];
-    // third line: video engines / fan / perf / mode, only if we have any
-    {
-        let mut s: Vec<Span<'static>> = Vec::new();
-        if let Some(d) = g.dec_pct {
-            s.extend(stat_span("DEC", format!("{d:.0}%"), th.cyan, th));
-        }
-        if let Some(e) = g.enc_pct {
-            s.extend(stat_span("ENC", format!("{e:.0}%"), th.green, th));
-        }
-        if let Some(f) = g.fan_pct {
-            s.extend(stat_span("FAN", format!("{f:.0}%"), th.dim, th));
-        } else if let Some(r) = g.fan_rpm {
-            s.extend(stat_span("FAN", format!("{r}rpm"), th.dim, th));
-        }
-        if let Some(p) = &g.perf_level {
-            if p.to_lowercase() != "auto" {
-                s.extend(stat_span("PERF", p.clone(), th.dim, th));
-            }
-        }
-        if let Some(m) = &g.mode {
-            let ml = m.to_lowercase();
-            if !ml.is_empty() && ml != "normal" {
-                let mc = if ml.contains("power saving") || ml.contains("throttl") || ml.contains("low")
-                {
-                    th.red
-                } else {
-                    th.yellow
-                };
-                s.extend(stat_span("MODE", m.clone(), mc, th));
-            }
-        }
-        if !s.is_empty() {
-            stat_lines.push(Line::from(s));
-        }
-    }
+    };
     let stats_h = stat_lines.len() as u16;
 
     let split = Layout::default()
