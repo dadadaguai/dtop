@@ -586,28 +586,28 @@ fn draw_gpu_card(
         return;
     }
 
-    let util_s = g
-        .util
-        .map(|u| format!("{u:.0}%"))
-        .unwrap_or_else(|| "N/A".into());
-    let util_c = g.util.map(|u| util_color(u, th)).unwrap_or(th.dim);
     let temp = g.temp_c.unwrap_or(0.0);
-    let vram_s = match (g.vram_used_mb, g.vram_total_mb) {
-        (Some(u), Some(t)) if t > 0.0 => format!(
-            "{:.0}% {:.1}/{:.0}G",
-            u / t * 100.0,
-            u / 1024.0,
-            t / 1024.0
+    let (vram_s, vram_pct) = match (g.vram_used_mb, g.vram_total_mb) {
+        (Some(u), Some(t)) if t > 0.0 => (
+            format!("{:.0}% {:.1}/{:.0}G", u / t * 100.0, u / 1024.0, t / 1024.0),
+            Some(u / t * 100.0),
         ),
-        (Some(u), Some(t)) => format!("{:.1}/{:.0}G", u / 1024.0, t / 1024.0),
-        _ => "N/A".into(),
+        (Some(u), Some(t)) => (format!("{:.1}/{:.0}G", u / 1024.0, t / 1024.0), None),
+        _ => ("N/A".into(), None),
     };
 
     let cat = |groups: &[&Vec<Span<'static>>]| -> Vec<Span<'static>> {
         groups.iter().flat_map(|g| (*g).iter().cloned()).collect()
     };
 
-    let sp_util = stat_span("UTIL", util_s, util_c, th);
+    // UTIL is intentionally not shown as a stat: it is redundant here and the
+    // space is better used by VRAM / clocks / engines.
+    let sp_vram = stat_span(
+        "VRAM",
+        vram_s,
+        vram_pct.map(|p| util_color(p, th)).unwrap_or(th.dim),
+        th,
+    );
     let sp_temp = stat_span(
         "TEMP",
         g.temp_c.map(|t| format!("{t:.0}C")).unwrap_or_else(|| "N/A".into()),
@@ -620,7 +620,6 @@ fn draw_gpu_card(
         th.orange,
         th,
     );
-    let sp_hbm = stat_span("VRAM", vram_s, th.cyan, th);
     let sp_sclk = stat_span(
         "SCLK",
         g.sclk_mhz.map(|c| format!("{c}M")).unwrap_or_else(|| "N/A".into()),
@@ -664,33 +663,30 @@ fn draw_gpu_card(
         }
     }
 
-    // Always keep room for the braille charts (they are the point of this
-    // view). Only drop to a text-only card when there is genuinely no space.
+    // Keep room for the VRAM curve; UTIL is dropped and VRAM leads line 1 so its
+    // usage rate is never clipped.
     let stat_lines: Vec<Line<'static>> = if inner.height >= 9 && !extras.is_empty() {
         vec![
-            Line::from(cat(&[&sp_util, &sp_temp, &sp_pwr])),
-            Line::from(cat(&[&sp_hbm, &sp_sclk, &sp_mclk])),
+            Line::from(cat(&[&sp_vram, &sp_temp, &sp_pwr])),
+            Line::from(cat(&[&sp_sclk, &sp_mclk])),
             Line::from(extras.clone()),
         ]
-    } else if inner.height >= 7 {
+    } else if inner.height >= 6 {
         let line2 = if extras.is_empty() {
-            cat(&[&sp_hbm, &sp_sclk, &sp_mclk])
+            cat(&[&sp_sclk, &sp_mclk])
         } else {
-            cat(&[&sp_hbm, &sp_sclk, &extras])
+            cat(&[&sp_sclk, &extras])
         };
         vec![
-            Line::from(cat(&[&sp_util, &sp_temp, &sp_pwr])),
+            Line::from(cat(&[&sp_vram, &sp_temp, &sp_pwr])),
             Line::from(line2),
         ]
-    } else if inner.height >= 5 {
-        vec![Line::from(cat(&[&sp_util, &sp_temp, &sp_pwr, &sp_hbm]))]
+    } else if inner.height >= 4 {
+        vec![Line::from(cat(&[&sp_vram, &sp_temp]))]
     } else {
-        let mut s = cat(&[&sp_util, &sp_temp, &sp_pwr]);
+        let mut s = cat(&[&sp_vram]);
         if inner.height >= 2 {
-            s.extend(sp_hbm.clone());
-        }
-        if inner.height >= 3 {
-            s.extend(sp_sclk.clone());
+            s.extend(sp_temp.clone());
         }
         f.render_widget(Paragraph::new(Line::from(s)), inner);
         return;
@@ -699,7 +695,7 @@ fn draw_gpu_card(
 
     let split = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(stats_h), Constraint::Min(3)])
+        .constraints([Constraint::Length(stats_h), Constraint::Min(2)])
         .split(inner);
     f.render_widget(Paragraph::new(stat_lines), split[0]);
 
@@ -738,14 +734,25 @@ fn render_curve(
         .style(Style::default().fg(color))
         .data(&points)];
     let xmax = (points.len().saturating_sub(1)).max(1) as f64;
+    // auto-scale the Y axis to the data so small changes are visible
+    // (a fixed 0-100 axis made e.g. 39% -> 42% invisible in a 3-row chart)
+    let dmax = data.iter().cloned().fold(0.0f64, f64::max);
+    let ymax = if dmax <= 0.0 {
+        10.0
+    } else {
+        ((dmax * 1.15 / 10.0).ceil() * 10.0).clamp(10.0, 100.0)
+    };
     let chart = Chart::new(datasets)
         .block(block)
         .x_axis(Axis::default().bounds([0.0, xmax]))
         .y_axis(
             Axis::default()
-                .bounds([0.0, 100.0])
+                .bounds([0.0, ymax])
                 .style(Style::default().fg(th.dim))
-                .labels(vec!["0", "100"]),
+                .labels(vec![
+                    Line::from("0"),
+                    Line::from(format!("{ymax:.0}")),
+                ]),
         );
     f.render_widget(chart, area);
 }
