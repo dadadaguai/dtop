@@ -3,13 +3,16 @@ use std::fs;
 
 pub struct CpuSample {
     pub total: f64,
+    #[allow(dead_code)]
     pub per_core: Vec<f64>,
 }
 
 pub struct CpuCollector {
     prev_total: Option<Vec<u64>>,
     prev_cores: Option<Vec<Vec<u64>>>,
+    #[allow(dead_code)]
     pub model: String,
+    #[allow(dead_code)]
     pub nproc: usize,
     pub load: [f64; 3],
 }

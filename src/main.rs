@@ -73,11 +73,14 @@ fn main() -> Result<()> {
     );
     log::info!("args: {cli:?}");
 
-    let backend = collectors::gpu::detect(&cli.backend);
+    let backend = collectors::gpu::detect(&cli.backend, cli.window_ms);
     log::info!("gpu backend selected: {}", backend.name());
 
     if cli.once {
-        return once::run(&cli, backend.as_ref());
+        return once::run_once(backend.as_ref());
+    }
+    if cli.json {
+        return once::run_json(backend.as_ref());
     }
 
     enable_raw_mode()?;
@@ -114,11 +117,11 @@ fn run_loop(term: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<io::
                 }
                 Event::Mouse(m) => match m.kind {
                     MouseEventKind::ScrollUp => {
-                        app.scroll_focused(-1, false);
+                        app.scroll(-1);
                         dirty = true;
                     }
                     MouseEventKind::ScrollDown => {
-                        app.scroll_focused(1, false);
+                        app.scroll(1);
                         dirty = true;
                     }
                     _ => {}

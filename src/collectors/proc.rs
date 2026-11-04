@@ -16,8 +16,6 @@ pub struct ProcInfo {
     pub container: String,
     /// short kubernetes pod uid, empty when not in a pod
     pub pod: String,
-    pub gpu_ids: Vec<usize>,
-    pub gpu_vram_mb: f64,
 }
 
 pub struct ProcCollector {
@@ -115,8 +113,6 @@ impl ProcCollector {
             cmd: String::new(),
             container: String::new(),
             pod: String::new(),
-            gpu_ids: Vec::new(),
-            gpu_vram_mb: 0.0,
         })
     }
 

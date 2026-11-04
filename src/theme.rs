@@ -10,7 +10,9 @@ pub struct Theme {
     pub yellow: Color,
     pub red: Color,
     pub cyan: Color,
+    #[allow(dead_code)]
     pub orange: Color,
+    pub magenta: Color,
     pub sel: Color,
 }
 
@@ -31,6 +33,7 @@ pub fn themes() -> Vec<Theme> {
             red: rgb(0xff5d5d),
             cyan: rgb(0x38d9f5),
             orange: rgb(0xff9f43),
+            magenta: rgb(0xd16bd1),
             sel: rgb(0x1f4b66),
         },
         Theme {
@@ -44,6 +47,7 @@ pub fn themes() -> Vec<Theme> {
             red: rgb(0xbf616a),
             cyan: rgb(0x8fbcbb),
             orange: rgb(0xd08770),
+            magenta: rgb(0xb48ead),
             sel: rgb(0x434c5e),
         },
         Theme {
@@ -57,6 +61,7 @@ pub fn themes() -> Vec<Theme> {
             red: rgb(0xc22f2f),
             cyan: rgb(0x0e7ea3),
             orange: rgb(0xb35f1e),
+            magenta: rgb(0x8a3d8a),
             sel: rgb(0xcfe3ec),
         },
     ]

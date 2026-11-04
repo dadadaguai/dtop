@@ -1,168 +1,251 @@
-use crate::cli::Cli;
-use crate::collectors::cpu::CpuCollector;
-use crate::collectors::gpu::{GpuBackend, GpuSnapshot};
+use crate::collectors::cpu::{CpuCollector, CpuSample};
+use crate::collectors::gpu::{GpuBackend, GpuSample, GpuSnapshot};
 use crate::collectors::{mem, proc};
 use anyhow::Result;
+use serde::Serialize;
+use std::collections::BTreeMap;
 
-/// One-shot snapshot mode (like gpustat): print and exit.
-pub fn run(cli: &Cli, backend: &dyn GpuBackend) -> Result<()> {
-    let mut cpu = CpuCollector::new();
+pub fn host_cpu_mem(cpu: &mut CpuCollector, proc_col: &mut proc::ProcCollector) -> (f64, f64) {
     let _ = cpu.read();
-    let mut pc = proc::ProcCollector::new();
-    let _ = pc.scan();
-    std::thread::sleep(std::time::Duration::from_millis(400));
-    let cs = cpu.read()?;
-    let ms = mem::read()?;
-    let mut procs = pc.scan();
-    let snap: GpuSnapshot = backend.collect().unwrap_or_else(|e| GpuSnapshot {
+    let _ = proc_col.scan();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let cs = cpu
+        .read()
+        .unwrap_or(CpuSample { total: 0.0, per_core: vec![] });
+    let ms = mem::read().unwrap_or_default();
+    let mem_pct = (ms.total_kb as f64 - ms.avail_kb as f64) / ms.total_kb.max(1) as f64 * 100.0;
+    (cs.total, mem_pct)
+}
+
+fn collect(backend: &dyn GpuBackend) -> GpuSnapshot {
+    backend.collect().unwrap_or_else(|e| GpuSnapshot {
         backend: backend.name().to_string(),
         error: Some(e.to_string()),
         ..Default::default()
-    });
+    })
+}
+
+/// Merge host info (user/cpu%/mem%/command) into GPU processes.
+fn merge_processes(snap: &GpuSnapshot, proc_col: &mut proc::ProcCollector) -> Vec<ProcessRow> {
+    let host = proc_col.scan();
+    let mut map: std::collections::HashMap<u32, proc::ProcInfo> =
+        host.into_iter().map(|p| (p.pid, p)).collect();
+    let mut pids: Vec<u32> = snap.procs.iter().map(|p| p.pid).collect();
+    pids.sort_unstable();
+    pids.dedup();
+    for pid in pids {
+        if let Some(hp) = map.get_mut(&pid) {
+            proc_col.read_rss(hp);
+            if hp.cmd.is_empty() {
+                hp.cmd = proc::ProcCollector::read_cmd(pid);
+            }
+        }
+    }
+    let mut rows = Vec::new();
+    for gp in &snap.procs {
+        let host = map.get(&gp.pid);
+        let user = host.map(|h| h.user.clone()).unwrap_or_else(|| "?".into());
+        let cpu_pct = host.map(|h| h.cpu_pct).unwrap_or(0.0);
+        let mem_pct = host.map(|h| h.mem_pct).unwrap_or(0.0);
+        let cmd = host
+            .map(|h| h.cmd.clone())
+            .unwrap_or_else(|| gp.name.clone());
+        for d in &gp.devices {
+            rows.push(ProcessRow {
+                pid: gp.pid,
+                user: user.clone(),
+                cpu_pct,
+                mem_pct,
+                cmd: cmd.clone(),
+                device: Some(d.device),
+                vram_mb: d.vram_mb,
+                cu_pct: d.cu_pct,
+            });
+        }
+    }
+    rows
+}
+
+struct ProcessRow {
+    pid: u32,
+    user: String,
+    cpu_pct: f64,
+    mem_pct: f64,
+    cmd: String,
+    device: Option<usize>,
+    vram_mb: Option<f64>,
+    cu_pct: Option<f64>,
+}
+
+/// One-shot text snapshot (nvitop-like).
+pub fn run_once(backend: &dyn GpuBackend) -> Result<()> {
+    let mut cpu = CpuCollector::new();
+    let mut pc = proc::ProcCollector::new();
+    let (cpu_pct, mem_pct) = host_cpu_mem(&mut cpu, &mut pc);
+    let snap = collect(backend);
+    let rows = merge_processes(&snap, &mut pc);
 
     let host = std::fs::read_to_string("/proc/sys/kernel/hostname")
         .unwrap_or_else(|_| "localhost".into())
         .trim()
         .to_string();
-    let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
-
-    println!("dtop {}  {}  {}  [backend: {}]", env!("CARGO_PKG_VERSION"), host, now, snap.backend);
     println!(
-        "CPU  {:5.1}%  ({} cores)  load {:.2} {:.2} {:.2}",
-        cs.total,
-        cs.per_core.len(),
-        cpu.load[0],
-        cpu.load[1],
-        cpu.load[2]
+        "dtop {}  host: {}  devices: {}  [backend: {}]  host cpu {:.1}%  mem {:.1}%",
+        env!("CARGO_PKG_VERSION"),
+        host,
+        snap.gpus.len(),
+        snap.backend,
+        cpu_pct,
+        mem_pct
     );
-    println!(
-        "MEM  used {} / {}  cache {}  avail {}  swap {} / {}",
-        mem::fmt_kb(ms.used_kb),
-        mem::fmt_kb(ms.total_kb),
-        mem::fmt_kb(ms.cache_kb),
-        mem::fmt_kb(ms.avail_kb),
-        mem::fmt_kb(ms.swap_used_kb()),
-        mem::fmt_kb(ms.swap_total_kb)
-    );
-
-    if snap.gpus.is_empty() {
-        let reason = snap
-            .error
-            .as_deref()
-            .unwrap_or("no DCU data (backend produced no cards)");
-        println!("DCU  none  [{reason}]");
-        println!("     hints: install DTK (hy-smi) / check driver (ls /dev/kfd) / demo: dtop -b mock");
-    }
     if let Some(err) = &snap.error {
-        if !snap.gpus.is_empty() {
-            println!("DCU  backend error: {err}");
-        }
+        println!("! {err}");
     }
-    let gpu_by_pid: std::collections::HashMap<u32, &_> =
-        snap.procs.iter().map(|p| (p.pid, p)).collect();
+    println!();
+    println!(
+        "{:>3}  {:<10}  {:>5}  {:>7}  {:>7}  {:>6}  {:>11}  {:>6}  {:>6}",
+        "HCU", "Model", "Temp", "Power", "HCU%", "CU%", "VRAM", "SCLK", "MCLK"
+    );
     for g in &snap.gpus {
-        let util_s = g
-            .util
-            .map(|u| format!("{u:>3.0}%"))
-            .unwrap_or_else(|| "N/A ".into());
-        let vram_s = match (g.vram_used_mb, g.vram_total_mb) {
-            (Some(u), Some(t)) if t > 0.0 => format!(
-                "{:.0}% {:.1}G/{:.0}G",
-                u / t * 100.0,
-                u / 1024.0,
-                t / 1024.0
-            ),
-            (Some(u), Some(t)) => format!("{:.1}G/{:.0}G", u / 1024.0, t / 1024.0),
-            _ => "N/A".into(),
-        };
         println!(
-            "DCU{} {}  util {}  vram {}  {}°C  {}W  sclk {}MHz",
+            "{:>3}  {:<10}  {:>5}  {:>7}  {:>7}  {:>6}  {:>11}  {:>6}  {:>6}",
             g.index,
-            g.name,
-            util_s,
-            vram_s,
-            g.temp_c.map(|t| format!("{t:.0}")).unwrap_or_else(|| "N/A".into()),
-            g.power_w.map(|p| format!("{p:.0}")).unwrap_or_else(|| "N/A".into()),
-            g.sclk_mhz
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| "N/A".into()),
+            short_model(&g.name),
+            g.temp_c.map(|t| format!("{t:.1}C")).unwrap_or_else(|| "N/A".into()),
+            g.power_w.map(|p| format!("{p:.0}W")).unwrap_or_else(|| "N/A".into()),
+            fmt_pct(g.util),
+            fmt_pct(g.cu_util),
+            fmt_vram(g.vram_used_mb, g.vram_total_mb),
+            fmt_clk(g.sclk_mhz),
+            fmt_clk(g.mclk_mhz),
         );
-        // extra line only when the smi backend reports these
-        let mut extras: Vec<String> = Vec::new();
-        if let Some(d) = g.dec_pct {
-            extras.push(format!("dec {d:.0}%"));
-        }
-        if let Some(e) = g.enc_pct {
-            extras.push(format!("enc {e:.0}%"));
-        }
-        if let Some(f) = g.fan_pct {
-            extras.push(format!("fan {f:.0}%"));
-        } else if let Some(r) = g.fan_rpm {
-            extras.push(format!("fan {r}rpm"));
-        }
-        if let Some(p) = &g.perf_level {
-            extras.push(format!("perf {p}"));
-        }
-        if let Some(m) = &g.mode {
-            extras.push(format!("mode {m}"));
-        }
-        if let Some(tx) = g.pcie_tx_mbps {
-            let rx = g
-                .pcie_rx_mbps
-                .map(|r| format!("{r:.0}"))
-                .unwrap_or_else(|| "-".into());
-            extras.push(format!("pcie tx {tx:.0}/rx {rx} MB/s"));
-        }
-        if !extras.is_empty() {
-            println!("     {}", extras.join("  "));
-        }
     }
-
-    if cli.procs > 0 {
+    if !rows.is_empty() {
         println!();
         println!(
-            "{:<8}{:<12}{:>7}{:>7}  {:<8}{:>8}  {}",
-            "PID", "USER", "CPU%", "MEM%", "DCU", "VRAM", "COMMAND"
+            "{:>8}  {:<8}  {:>3}  {:>8}  {:>5}  {:>6}  {:>5}  {}",
+            "PID", "USER", "HCU", "VRAM", "CU%", "CPU%", "MEM%", "COMMAND"
         );
-        if cli.sort == "mem" {
-            for p in procs.iter_mut() {
-                pc.read_rss(p);
-            }
-            procs.sort_by(|a, b| b.mem_pct.partial_cmp(&a.mem_pct).unwrap());
-        } else {
-            procs.sort_by(|a, b| b.cpu_pct.partial_cmp(&a.cpu_pct).unwrap());
-        }
-        procs.truncate(cli.procs);
-        for p in procs.iter_mut() {
-            pc.read_rss(p);
-        }
-        for p in procs.iter() {
-            let (dcu, hbm) = match gpu_by_pid.get(&p.pid) {
-                Some(gp) => (
-                    if gp.gpu_ids.is_empty() {
-                        "-".to_string()
-                    } else {
-                        gp.gpu_ids
-                            .iter()
-                            .map(|i| i.to_string())
-                            .collect::<Vec<_>>()
-                            .join(",")
-                    },
-                    gp.vram_mb
-                        .map(|v| format!("{:.1}G", v / 1024.0))
-                        .unwrap_or_else(|| "-".into()),
-                ),
-                None => ("-".into(), "-".into()),
-            };
-            let cmd: String = proc::ProcCollector::read_cmd(p.pid)
-                .chars()
-                .take(60)
-                .collect();
+        for r in rows {
             println!(
-                "{:<8}{:<12}{:>6.1}{:>7.1}  {:<8}{:>8}  {}",
-                p.pid, p.user, p.cpu_pct, p.mem_pct, dcu, hbm, cmd
+                "{:>8}  {:<8}  {:>3}  {:>8}  {:>5}  {:>6.1}  {:>5.1}  {}",
+                r.pid,
+                r.user,
+                r.device.map(|d| d.to_string()).unwrap_or_else(|| "-".into()),
+                r.vram_mb.map(|v| format!("{:.1}G", v / 1024.0)).unwrap_or_else(|| "-".into()),
+                r.cu_pct.map(|c| format!("{c:.1}")).unwrap_or_else(|| "N/A".into()),
+                r.cpu_pct,
+                r.mem_pct,
+                r.cmd
             );
         }
     }
     Ok(())
+}
+
+#[derive(Serialize)]
+struct DevJson {
+    vram_used_mb: Option<f64>,
+    cu_pct: Option<f64>,
+}
+
+#[derive(Serialize)]
+struct ProcJson {
+    pid: u32,
+    username: String,
+    command: String,
+    cpu_percent: f64,
+    host_memory_percent: f64,
+    devices: BTreeMap<String, DevJson>,
+}
+
+#[derive(Serialize)]
+struct SnapshotJson {
+    dtop_version: String,
+    timestamp: f64,
+    host: HostJson,
+    devices: Vec<GpuSample>,
+    processes: Vec<ProcJson>,
+    errors: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct HostJson {
+    cpu_percent: f64,
+    memory_percent: f64,
+}
+
+/// One-shot JSON snapshot with a stable schema (null = unsupported metric).
+pub fn run_json(backend: &dyn GpuBackend) -> Result<()> {
+    let mut cpu = CpuCollector::new();
+    let mut pc = proc::ProcCollector::new();
+    let (cpu_pct, mem_pct) = host_cpu_mem(&mut cpu, &mut pc);
+    let snap = collect(backend);
+    let rows = merge_processes(&snap, &mut pc);
+
+    let mut procs: Vec<ProcJson> = Vec::new();
+    let mut by_pid: BTreeMap<u32, usize> = BTreeMap::new();
+    for r in rows {
+        let idx = *by_pid.entry(r.pid).or_insert_with(|| {
+            procs.push(ProcJson {
+                pid: r.pid,
+                username: r.user.clone(),
+                command: r.cmd.clone(),
+                cpu_percent: r.cpu_pct,
+                host_memory_percent: r.mem_pct,
+                devices: BTreeMap::new(),
+            });
+            procs.len() - 1
+        });
+        if let Some(d) = r.device {
+            procs[idx].devices.insert(
+                d.to_string(),
+                DevJson {
+                    vram_used_mb: r.vram_mb,
+                    cu_pct: r.cu_pct,
+                },
+            );
+        }
+    }
+
+    let errors = snap.error.clone().into_iter().collect();
+    let out = SnapshotJson {
+        dtop_version: env!("CARGO_PKG_VERSION").into(),
+        timestamp: chrono::Local::now().timestamp_millis() as f64 / 1000.0,
+        host: HostJson {
+            cpu_percent: cpu_pct,
+            memory_percent: mem_pct,
+        },
+        devices: snap.gpus,
+        processes: procs,
+        errors,
+    };
+    println!("{}", serde_json::to_string_pretty(&out)?);
+    Ok(())
+}
+
+fn short_model(name: &str) -> String {
+    let mut n = name;
+    for p in ["HYGON ", "MOCK ", "AMD "] {
+        if n.starts_with(p) {
+            n = &n[p.len()..];
+        }
+    }
+    let t: String = n.chars().take(10).collect();
+    t
+}
+
+fn fmt_pct(v: Option<f64>) -> String {
+    v.map(|x| format!("{x:.1}%")).unwrap_or_else(|| "N/A".into())
+}
+
+fn fmt_vram(used: Option<f64>, total: Option<f64>) -> String {
+    match (used, total) {
+        (Some(u), Some(t)) => format!("{:.1}/{:.0}G", u / 1024.0, t / 1024.0),
+        _ => "N/A".into(),
+    }
+}
+
+fn fmt_clk(v: Option<u64>) -> String {
+    v.map(|c| format!("{c}M")).unwrap_or_else(|| "N/A".into())
 }

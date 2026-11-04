@@ -45,6 +45,7 @@ pub fn read() -> Result<MemStats> {
     })
 }
 
+#[allow(dead_code)]
 pub fn fmt_kb(kb: u64) -> String {
     let gb = kb as f64 / 1024.0 / 1024.0;
     if gb >= 1.0 {

@@ -1,6 +1,6 @@
 use clap::Parser;
 
-/// dtop - a top-like system monitor for Hygon DCU + CPU
+/// dtop - an nvitop-style terminal monitor for Hygon DCU (via librocm_smi64)
 #[derive(Parser, Debug, Clone)]
 #[command(name = "dtop", version, about)]
 pub struct Cli {
@@ -16,26 +16,25 @@ pub struct Cli {
     #[arg(short = 't', long, default_value = "dark", value_name = "THEME")]
     pub theme: String,
 
-    /// GPU backend: auto | hy-smi | rocm-smi | mock | none
-    /// auto: hy-smi -> rocm-smi -> none (no fake data on machines without DCU)
+    /// GPU backend: rsmi | mock  (auto = rsmi)
     #[arg(short = 'b', long, default_value = "auto", value_name = "BACKEND")]
     pub backend: String,
 
-    /// print one snapshot and exit (script friendly, like gpustat)
+    /// only monitor these devices (comma separated), e.g. 0,1,3
+    #[arg(short = 'd', long, value_delimiter = ',', value_name = "0,1,3")]
+    pub devices: Option<Vec<usize>>,
+
+    /// HCU%/CU% sampling window in milliseconds (driver blocks for this long)
+    #[arg(long, default_value_t = 150, value_name = "MS")]
+    pub window_ms: u32,
+
+    /// print one text snapshot and exit
     #[arg(short = '1', long = "once")]
     pub once: bool,
 
-    /// initial view: detail | summary
-    #[arg(short = 'v', long, default_value = "detail", value_name = "VIEW")]
-    pub view: String,
-
-    /// process sort key: cpu | mem
-    #[arg(short = 's', long, default_value = "cpu", value_name = "KEY")]
-    pub sort: String,
-
-    /// max number of processes to display
-    #[arg(short = 'n', long, default_value_t = 10, value_name = "N")]
-    pub procs: usize,
+    /// print one JSON snapshot and exit (stable schema, null = unsupported)
+    #[arg(long)]
+    pub json: bool,
 
     /// log file path (default: ~/.local/state/dtop/dtop.log)
     #[arg(short = 'L', long, value_name = "FILE")]
