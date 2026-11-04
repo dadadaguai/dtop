@@ -62,6 +62,7 @@ pub struct App {
     pub mem_hist: VecDeque<f64>,
     pub proc_col: ProcCollector,
     pub proc_rows: Vec<ProcRow>,
+    pub max_procs: usize,
 
     pub gpu_state: Arc<Mutex<GpuSnapshot>>,
     pub gpu: GpuSnapshot,
@@ -156,6 +157,7 @@ impl App {
             mem_hist: VecDeque::new(),
             proc_col: ProcCollector::new(),
             proc_rows: vec![],
+            max_procs: cli.procs.max(1),
             gpu_state: shared,
             gpu: GpuSnapshot::default(),
             gpu_util_hist: vec![],

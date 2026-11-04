@@ -65,6 +65,7 @@ dtop -r metrics.jsonl     # 指标 JSONL 落地
 | `-b, --backend` | rsmi / mock（auto=rsmi） | auto |
 | `-d, --device 0,1,3` | 只看指定卡 | 全部 |
 | `--window-ms <MS>` | HCU%/CU% 采样窗口 | 150 |
+| `-n, --procs <N>` | 进程表最大显示条数 | 12 |
 | `-1, --once` | 文本快照一次即退 | - |
 | `--json` | JSON 快照一次即退 | - |
 | `-L, --log-file` / `--log-level` | 日志 | `~/.local/state/dtop/dtop.log` / info |

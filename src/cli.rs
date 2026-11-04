@@ -32,6 +32,10 @@ pub struct Cli {
     #[arg(short = '1', long = "once")]
     pub once: bool,
 
+    /// max number of processes shown in the table
+    #[arg(short = 'n', long, default_value_t = 12, value_name = "N")]
+    pub procs: usize,
+
     /// print one JSON snapshot and exit (stable schema, null = unsupported)
     #[arg(long)]
     pub json: bool,

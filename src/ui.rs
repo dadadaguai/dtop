@@ -13,8 +13,8 @@ const TEMP_RED_C: f64 = 75.0;
 const TEMP_YELLOW_C: f64 = 65.0;
 const POWER_RED_FRAC: f64 = 0.9;
 const POWER_YELLOW_FRAC: f64 = 0.8;
-const BAR_GREEN_BELOW: f64 = 60.0;
-const BAR_YELLOW_BELOW: f64 = 85.0;
+const BAR_GREEN_BELOW: f64 = 50.0;
+const BAR_YELLOW_BELOW: f64 = 80.0;
 
 const NA: &str = "N/A";
 
@@ -362,7 +362,7 @@ fn chart_lines(app: &App, th: &Theme, inner_w: usize) -> Vec<Line<'static>> {
 }
 
 // ---- Processes panel ----
-fn process_lines(app: &App, th: &Theme, inner_w: usize) -> Vec<Line<'static>> {
+fn process_lines(app: &App, th: &Theme, inner_w: usize, max_rows: usize) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from(vec![
         spb(format!("{:>7}  ", "PID"), th.text),
         spb(format!("{:<8} ", "USER"), th.text),
@@ -374,7 +374,20 @@ fn process_lines(app: &App, th: &Theme, inner_w: usize) -> Vec<Line<'static>> {
         spb("COMMAND", th.text),
     ])];
 
-    for (pos, p) in app.proc_rows.iter().enumerate() {
+    let total = app.proc_rows.len();
+    if total == 0 {
+        return lines;
+    }
+    // scroll window so the selected row is always visible
+    let visible = max_rows.min(total);
+    if visible == 0 {
+        return lines;
+    }
+    let sel = app.selected.min(total - 1);
+    let off = (sel + 1).saturating_sub(visible).min(total - visible);
+
+    for (j, p) in app.proc_rows.iter().enumerate().skip(off).take(visible) {
+        let pos = off + j;
         let marker = if pos == app.selected { ">" } else { " " };
         let cmd_width = inner_w.saturating_sub(50).max(8);
         let mut row = vec![
@@ -413,9 +426,31 @@ fn sort_name(sk: SortKey) -> &'static str {
     }
 }
 
-fn render_frame(app: &App, th: &Theme, width: usize) -> Vec<Line<'static>> {
+fn render_frame(app: &App, th: &Theme, width: usize, height: usize) -> Vec<Line<'static>> {
     let inner_w = width.saturating_sub(4); // boxes eat "│ " and " │"
     let has_gpu = !app.gpu.gpus.is_empty();
+
+    // fixed sections (everything except the process table rows)
+    let n_cards: usize = match &app.filter {
+        Some(f) => app.gpu.gpus.iter().filter(|g| f.contains(&g.index)).count(),
+        None => app.gpu.gpus.len(),
+    };
+    let devices_rows = if has_gpu { 1 + n_cards.max(1) } else { 1 };
+    let devices_h = 2 * devices_rows + 1;
+    let warn_h = app.warnings.len();
+    let err_h = if app.gpu.error.is_some() { 1 } else { 0 };
+    let help_h = 1;
+    let title_h = 3;
+    let util_h = 9; // borders + 7 chart rows
+    // drop the Utilization panel when the terminal is too short (dcutop does
+    // the same), so the process table + help line always fit
+    let include_util = has_gpu
+        && height >= title_h + devices_h + util_h + 4 + warn_h + err_h + help_h;
+    let util_h = if include_util { util_h } else { 0 };
+    let fixed = title_h + devices_h + util_h + warn_h + err_h + help_h;
+    let proc_box_h = height.saturating_sub(fixed);
+    let proc_inner = proc_box_h.saturating_sub(2);
+    let proc_visible = proc_inner.saturating_sub(1).min(app.max_procs);
 
     // title
     let stamp = chrono::Local::now().format("%b %d %H:%M:%S").to_string();
@@ -462,7 +497,7 @@ fn render_frame(app: &App, th: &Theme, width: usize) -> Vec<Line<'static>> {
     frame.push(box_bottom(width, th));
 
     // utilization
-    if has_gpu {
+    if include_util {
         frame.push(box_top("Utilization", width, th));
         for row in chart_lines(app, th, inner_w) {
             frame.push(box_row(row, width, th));
@@ -470,9 +505,9 @@ fn render_frame(app: &App, th: &Theme, width: usize) -> Vec<Line<'static>> {
         frame.push(box_bottom(width, th));
     }
 
-    // processes
+    // processes (scroll window, help line always kept on screen)
     frame.push(box_top("Processes", width, th));
-    let proc_rows = process_lines(app, th, inner_w);
+    let proc_rows = process_lines(app, th, inner_w, proc_visible);
     for row in proc_rows {
         frame.push(box_row(row, width, th));
     }
@@ -534,7 +569,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     let area = f.area();
     let width = area.width as usize;
 
-    let mut lines = render_frame(app, th, width);
+    let mut lines = render_frame(app, th, width, area.height as usize);
     lines.truncate(area.height as usize);
     f.render_widget(Paragraph::new(Text::from(lines)), area);
 
