@@ -418,8 +418,13 @@ impl RsmiInner {
             window_per_tick,
         };
         let result = (|| -> Result<(libloading::Library, RsmiApi)> {
-            let lib = unsafe { libloading::Library::new(find_library()?) }
-                .context("failed to load librocm_smi64.so")?;
+            let path = find_library()?;
+            let lib = unsafe { libloading::Library::new(&path) }.map_err(|e| {
+                anyhow::anyhow!(
+                    "failed to load {path}: {e} (note: static musl builds cannot dlopen — use the glibc build for FFI)",
+                    path = path.display()
+                )
+            })?;
             let api = RsmiApi::load(&lib)?;
             api.init()?;
             Ok((lib, api))
