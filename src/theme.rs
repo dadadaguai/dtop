@@ -13,6 +13,7 @@ pub struct Theme {
     #[allow(dead_code)]
     pub orange: Color,
     pub magenta: Color,
+    #[allow(dead_code)]
     pub sel: Color,
 }
 
@@ -71,22 +72,3 @@ pub fn theme_index(name: &str) -> usize {
     themes().iter().position(|t| t.name == name).unwrap_or(0)
 }
 
-pub fn util_color(pct: f64, th: &Theme) -> Color {
-    if pct < 60.0 {
-        th.green
-    } else if pct < 85.0 {
-        th.yellow
-    } else {
-        th.red
-    }
-}
-
-pub fn temp_color(t: f64, th: &Theme) -> Color {
-    if t < 55.0 {
-        th.green
-    } else if t < 70.0 {
-        th.yellow
-    } else {
-        th.red
-    }
-}

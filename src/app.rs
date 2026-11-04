@@ -71,7 +71,6 @@ pub struct App {
     pub interval: f64,
     pub history_len: usize,
     pub hostname: String,
-    pub uptime: String,
 
     pub warnings: Vec<Warning>,
     pub temp_warn: f64,
@@ -132,20 +131,6 @@ impl App {
             .unwrap_or_else(|_| "localhost".into())
             .trim()
             .to_string();
-        let uptime = std::fs::read_to_string("/proc/uptime")
-            .ok()
-            .and_then(|s| s.split_whitespace().next().and_then(|v| v.parse::<f64>().ok()))
-            .map(|secs| {
-                let d = (secs / 86400.0) as u64;
-                let h = ((secs % 86400.0) / 3600.0) as u64;
-                let m = ((secs % 3600.0) / 60.0) as u64;
-                if d > 0 {
-                    format!("{d}d {h}h")
-                } else {
-                    format!("{h}h {m}m")
-                }
-            })
-            .unwrap_or_else(|| "?".into());
 
         let recorder = match &cli.record {
             Some(path) => Some(Recorder::new(path, cli.record_interval)?),
@@ -178,7 +163,6 @@ impl App {
             interval: cli.interval.clamp(0.2, 30.0),
             history_len: cli.history.max(10),
             hostname,
-            uptime,
             warnings: Vec::new(),
             temp_warn: cli.temp_warn,
             temp_crit: cli.temp_crit,
