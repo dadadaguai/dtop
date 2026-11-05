@@ -572,20 +572,23 @@ fn collect_processes(api: &RsmiApi) -> Vec<GpuProc> {
             devices: Vec::new(),
         };
         if let Some((_vram_bytes, gpus)) = api.compute_process_info_v2(pid) {
-            for (dev, _rate) in gpus {
-                let mut d = GpuProcDevice {
-                    device: dev,
-                    vram_mb: None,
-                    cu_pct: None,
-                };
-                if let Some((vram_mb, cu)) = api.process_info_by_device(pid, dev as u32) {
-                    d.vram_mb = Some(vram_mb);
-                    d.cu_pct = Some(cu);
+            for (dev, v2_rate) in gpus {
+                // CU% priority: dev_proc_usage > by_device cu_occupancy >
+                // v2 gpuUsageRate (coarse, used only as a fallback)
+                let mut vram_mb = None;
+                let mut cu_pct = Some(v2_rate as f64);
+                if let Some((vram, cu)) = api.process_info_by_device(pid, dev as u32) {
+                    vram_mb = Some(vram);
+                    cu_pct = Some(cu);
                 }
                 if let Some(cu) = api.dev_proc_usage(pid, dev as u32) {
-                    d.cu_pct = Some(cu);
+                    cu_pct = Some(cu);
                 }
-                proc.devices.push(d);
+                proc.devices.push(GpuProcDevice {
+                    device: dev,
+                    vram_mb,
+                    cu_pct,
+                });
             }
         }
         out.push(proc);
