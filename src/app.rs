@@ -245,7 +245,20 @@ impl App {
                     cu_pct: None,
                 });
             }
-            for d in &gp.devices {
+            // rsmi's v2 gpu_index lists every *visible* card for a process,
+            // not just the ones it actually occupies. Drop device rows with no
+            // measurable footprint (vram ~0 and cu ~0) to avoid 8 identical
+            // rows per process.
+            let significant: Vec<&_> = gp
+                .devices
+                .iter()
+                .filter(|d| {
+                    d.vram_mb.map(|v| v > 0.5).unwrap_or(false)
+                        || d.cu_pct.map(|c| c > 0.1).unwrap_or(false)
+                })
+                .collect();
+            if significant.is_empty() && !gp.devices.is_empty() {
+                // process holds no real footprint on any card yet -> one row
                 rows.push(ProcRow {
                     pid: gp.pid,
                     user: user.clone(),
@@ -253,10 +266,24 @@ impl App {
                     mem_pct,
                     cmd: cmd.clone(),
                     pod: pod.clone(),
-                    device: Some(d.device),
-                    vram_mb: d.vram_mb,
-                    cu_pct: d.cu_pct,
+                    device: None,
+                    vram_mb: None,
+                    cu_pct: None,
                 });
+            } else {
+                for d in significant {
+                    rows.push(ProcRow {
+                        pid: gp.pid,
+                        user: user.clone(),
+                        cpu_pct,
+                        mem_pct,
+                        cmd: cmd.clone(),
+                        pod: pod.clone(),
+                        device: Some(d.device),
+                        vram_mb: d.vram_mb,
+                        cu_pct: d.cu_pct,
+                    });
+                }
             }
         }
 
@@ -266,14 +293,17 @@ impl App {
         }
         match self.sort_key {
             SortKey::Pid => rows.sort_by_key(|r| r.pid),
+            // treat None (no measurable footprint) as -1 so those rows sink
             SortKey::Vram => rows.sort_by(|a, b| {
                 b.vram_mb
-                    .partial_cmp(&a.vram_mb)
+                    .unwrap_or(-1.0)
+                    .partial_cmp(&a.vram_mb.unwrap_or(-1.0))
                     .unwrap_or(std::cmp::Ordering::Equal)
             }),
             SortKey::Cu => rows.sort_by(|a, b| {
                 b.cu_pct
-                    .partial_cmp(&a.cu_pct)
+                    .unwrap_or(-1.0)
+                    .partial_cmp(&a.cu_pct.unwrap_or(-1.0))
                     .unwrap_or(std::cmp::Ordering::Equal)
             }),
             SortKey::Cpu => rows.sort_by(|a, b| b.cpu_pct.partial_cmp(&a.cpu_pct).unwrap()),
