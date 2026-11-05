@@ -1,6 +1,6 @@
 [package]
 name = "dtop"
-version = "0.1.0"
+version = "0.2.1"
 edition = "2021"
 description = "A top-like system monitor for Hygon DCU + CPU"
 license = "MIT"
