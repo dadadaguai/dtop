@@ -24,6 +24,16 @@ dtop 0.1.0  host: dcu-node01  devices: 8  up 3d 4h  10:00:00  host cpu 2.4%  mem
  q quit | r refresh | ↑/↓ select | p/m/c/u sort | 1-9 filter | a all | t theme | k kill
 ```
 
+## 界面预览
+
+**bw-gfx936（BW 代）**
+
+![dtop on bw-gfx936](docs/images/bw-gfx936.png)
+
+**nmz-gfx938（NMZ 代）**
+
+![dtop on nmz-gfx938](docs/images/nmz-gfx938.png)
+
 ## 特性
 
 - **Devices 表**：每卡一行 —— 型号 / 温度 / 功耗 / 整卡利用率(HCU%)渐变条 / **CU 利用率** / 显存(VRAM)渐变条 / SCLK / MCLK，温度/功耗/利用率阈值变色
